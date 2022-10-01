@@ -1,0 +1,10 @@
+[build-system]
+build-backend = "setuptools.build_meta"
+requires = ["setuptools>=40.8.0"]
+
+[project]
+authors = [
+	{name = "Caleb P. Burns", email = "cpburnz@gmail.com"},
+]
+name = "pg-activity-qt"
+version = "0.1"
