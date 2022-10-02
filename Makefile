@@ -2,7 +2,7 @@
 # This Makefile is used to manage development and distribution.
 #
 # Created: 2022-09-26
-# Updated: 2022-09-26
+# Updated: 2022-10-02
 #
 
 .PHONY: create-venv help update-venv
@@ -41,5 +41,5 @@ dev-venv-create: dev-venv-base dev-venv-install
 
 dev-venv-install:
 	${VENV} pip install --upgrade pip setuptools wheel
-	${VENV} pip install --upgrade pyside6-essentials
+	${VENV} pip install --upgrade psycopg2 pyside6-essentials
 	${VENV} pip install -e "${SRC_DIR}"

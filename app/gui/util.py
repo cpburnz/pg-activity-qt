@@ -4,6 +4,7 @@ This module defines GUI utilities.
 
 from typing import (
 	NamedTuple,
+	Optional,
 	Type)
 
 from PySide6.QtCore import (
@@ -17,3 +18,11 @@ class ObjectSel(NamedTuple):
 	"""
 	type: Type[QObject]
 	name: str
+
+
+def find_child(parent: QObject, sel: 'ObjectSel') -> Optional[QObject]:
+	"""
+	Find the descendant object. This wraps the `QObject.findChild()` method to
+	fix type hinting.
+	"""
+	return parent.findChild(sel.type, sel.name)

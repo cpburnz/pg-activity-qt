@@ -21,7 +21,7 @@
        <enum>Qt::Vertical</enum>
       </property>
       <widget class="QTableWidget" name="table_Activity"/>
-      <widget class="QTextEdit" name="text_Query"/>
+      <widget class="QTextEdit" name="textEdit_Query"/>
      </widget>
     </item>
    </layout>
@@ -53,7 +53,8 @@
   <widget class="QStatusBar" name="statusbar"/>
   <action name="action_Connect">
    <property name="icon">
-    <iconset theme="network-connect"/>
+    <iconset theme="network-connect">
+     <normaloff>.</normaloff>.</iconset>
    </property>
    <property name="text">
     <string>Co&amp;nnect</string>
@@ -64,7 +65,8 @@
   </action>
   <action name="action_Disconnect">
    <property name="icon">
-    <iconset theme="network-disconnect"/>
+    <iconset theme="network-disconnect">
+     <normaloff>.</normaloff>.</iconset>
    </property>
    <property name="text">
     <string>&amp;Disconnect</string>
@@ -75,7 +77,8 @@
   </action>
   <action name="action_Refresh">
    <property name="icon">
-    <iconset theme="view-refresh"/>
+    <iconset theme="view-refresh">
+     <normaloff>.</normaloff>.</iconset>
    </property>
    <property name="text">
     <string>&amp;Refresh</string>
@@ -86,7 +89,8 @@
   </action>
   <action name="action_CancelQuery">
    <property name="icon">
-    <iconset theme="media-playback-stop"/>
+    <iconset theme="media-playback-stop">
+     <normaloff>.</normaloff>.</iconset>
    </property>
    <property name="text">
     <string>&amp;Cancel Query</string>
@@ -97,7 +101,8 @@
   </action>
   <action name="action_KillQuery">
    <property name="icon">
-    <iconset theme="process-stop"/>
+    <iconset theme="process-stop">
+     <normaloff>.</normaloff>.</iconset>
    </property>
    <property name="text">
     <string>&amp;Kill Query</string>
@@ -108,7 +113,8 @@
   </action>
   <action name="action_Quit">
    <property name="icon">
-    <iconset theme="application-exit"/>
+    <iconset theme="application-exit">
+     <normaloff>.</normaloff>.</iconset>
    </property>
    <property name="text">
     <string>&amp;Quit</string>

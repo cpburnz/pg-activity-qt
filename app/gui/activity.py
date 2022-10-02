@@ -9,9 +9,10 @@ from typing import (
 	cast)
 
 from PySide6.QtCore import (
+	QObject,
 	SignalInstance)
 from PySide6.QtGui import (
-	QAction,)
+	QAction)
 from PySide6.QtWidgets import (
 	QMainWindow,
 	QStatusBar,
@@ -20,30 +21,36 @@ from PySide6.QtWidgets import (
 from PySide6.QtUiTools import (
 	QUiLoader)
 
+from app.activity import (
+	PostgresActivityModel)
+from .connect import (
+	ConnectDialogController,
+	ConnectDialogData)
 from .util import (
-	ObjectSel)
+	ObjectSel,
+	find_child)
 
-ACTION_CANCEL_QUERY = ObjectSel(QAction, "action_CancelQuery")
+_ACTION_CANCEL_QUERY = ObjectSel(QAction, "action_CancelQuery")
 """
 The selector for the cancel query action.
 """
 
-ACTION_CONNECT = ObjectSel(QAction, "action_Connect")
+_ACTION_CONNECT = ObjectSel(QAction, "action_Connect")
 """
 The selector for the connect action.
 """
 
-ACTION_DISCONNECT = ObjectSel(QAction, "action_Disconnect")
+_ACTION_DISCONNECT = ObjectSel(QAction, "action_Disconnect")
 """
 The selector for the disconnect action.
 """
 
-ACTION_KILL_QUERY = ObjectSel(QAction, "action_KillQuery")
+_ACTION_KILL_QUERY = ObjectSel(QAction, "action_KillQuery")
 """
 The selector for the kill query action.
 """
 
-ACTION_REFRESH = ObjectSel(QAction, "action_Refresh")
+_ACTION_REFRESH = ObjectSel(QAction, "action_Refresh")
 """
 The selector for the refresh action.
 """
@@ -53,42 +60,37 @@ LOG = logging.getLogger(__name__)
 The module logger.
 """
 
-TITLE = "PostgreSQL Activity"
-"""
-The window title.
-"""
-
-WIDGET_ACTIVITY_TABLE = ObjectSel(QTableWidget, "table_Activity")
+_WIDGET_ACTIVITY_TABLE = ObjectSel(QTableWidget, "table_Activity")
 """
 The selector for the activity table widget.
 """
 
-WIDGET_QUERY_TEXT = ObjectSel(QTextEdit, "text_Query")
+_WIDGET_QUERY_TEXT = ObjectSel(QTextEdit, "textEdit_Query")
 """
 The selector for the query text widget.
 """
 
-WIDGET_STATUS_BAR = ObjectSel(QStatusBar, "statusbar")
+_WIDGET_STATUS_BAR = ObjectSel(QStatusBar, "statusbar")
 """
 The selector for the status bar widget.
 """
 
-WINDOW_UI_FILE = "activity.ui"
+_WINDOW_UI_FILE = "activity.ui"
 """
 The path to the activity window UI file.
 """
 
-MENU_CONNECTED_ACTIONS = [
-	ACTION_DISCONNECT,
-	ACTION_REFRESH,
+_MENU_CONNECTED_ACTIONS = [
+	_ACTION_DISCONNECT,
+	_ACTION_REFRESH,
 ]
 """
 The selectors for the menu actions that require an active connection.
 """
 
-MENU_SELECTED_QUERY_ACTIONS = [
-	ACTION_CANCEL_QUERY,
-	ACTION_KILL_QUERY,
+_MENU_SELECTED_QUERY_ACTIONS = [
+	_ACTION_CANCEL_QUERY,
+	_ACTION_KILL_QUERY,
 ]
 """
 The selectors for the menu actions that require a specific query to be selected.
@@ -105,9 +107,20 @@ class ActivityController(object):
 		Initializes the :class:`ActivityController` instance.
 		"""
 
+		self.__activity_model: Optional[PostgresActivityModel] = None
+		"""
+		*__activity_model* (:class:`PostgresActivityModel`) is used to monitor the
+		activity of the PostgreSQL database.
+		"""
+
 		self.__activity_table = cast(QTableWidget, None)
 		"""
 		*__activity_table* (:class:`QTableWidget`) is the activity table widget.
+		"""
+
+		self.__base_title = cast(str, None)
+		"""
+		*base_title* (:class:`str`) is the base window title.
 		"""
 
 		self.__query_text = cast(QTextEdit, None)
@@ -129,14 +142,14 @@ class ActivityController(object):
 		"""
 		Disable the menu actions that require an active connection.
 		"""
-		self.__enable_actions(MENU_CONNECTED_ACTIONS, False)
+		self.__enable_actions(_MENU_CONNECTED_ACTIONS, False)
 
 	def __disable_selected_query_actions(self) -> None:
 		"""
 		Disable the menu actions that require a specific query to be selected from
 		the activity table.
 		"""
-		self.__enable_actions(MENU_SELECTED_QUERY_ACTIONS, False)
+		self.__enable_actions(_MENU_SELECTED_QUERY_ACTIONS, False)
 
 	def __enable_actions(
 		self,
@@ -153,55 +166,90 @@ class ActivityController(object):
 		(:data:`True`), or disabled (:data:`False`).
 		"""
 		for sel in selectors:
-			action: QAction = self.__window.findChild(*sel)  # type: ignore
+			action: QAction = self.__get_child(sel)
 			action.setEnabled(enable)
+
+	def __get_child(self, sel: ObjectSel) -> QObject:
+		"""
+		Get the window child object.
+
+		*sel* (:class:`ObjectSel`) is the object selector.
+
+		Returns the child (:class:`QObject`).
+		"""
+		child = find_child(self.__window, sel)
+		assert child is not None, "Failed to find child {type}:{name}.".format(
+			type=sel.type.__name__, name=sel.name,
+		)
+		return child
+
+	def __get_selected_pid(self) -> Optional[int]:
+		"""
+		Get the PID of the selected connection.
+
+		Returns the PID (:class:`int` or :data:`None`).
+		"""
+		# TODO: Get PID from activity table.
 
 	def __on_action_cancel_query(self) -> None:
 		"""
 		Called when the cancel query action is triggered.
 		"""
 		LOG.debug("Cancel query.")
-		# TODO: Get PID of selected query.
-		# TODO: Cancel query.
+		pid = self.__get_selected_pid()
+		if pid is not None:
+			self.__activity_model.cancel_query(pid)
 
 	def __on_action_connect(self) -> None:
 		"""
 		Called when the connect action is triggered.
 		"""
 		LOG.debug("Open connect dialog.")
-		connect = ConnectController()
+		connect = ConnectDialogController()
 		connect.open()
 
-		# TODO: Bind to signal to get dialog result.
-		# TODO: On success:
-		# - Disconnect active connection.
-		# - Establish new connection.
-		# - Start activity refresh.
+		# Bind signals.
+		# - NOTE: This is nothing to do if the connect dialog is canceled.
+		connect.signals.accepted.connect(self.__on_connect_submit)
 
 	def __on_action_disconnect(self) -> None:
 		"""
 		Called when the disconnect action is triggered.
 		"""
 		LOG.debug("Disconnect.")
-		# TODO: Disconnect active connection.
-		# TODO: Disable connected actions.
-		# TODO: Stop activity refresh.
+		activity_model, self.__activity_model = self.__activity_model, None
+		activity_model.close()
 
 	def __on_action_kill_query(self) -> None:
 		"""
 		Called when the kill query action is triggered.
 		"""
 		LOG.debug("Kill query.")
-		# TODO: Get PID of selected query.
-		# TODO: Terminate query.
+		pid = self.__get_selected_pid()
+		if pid is not None:
+			self.__activity_model.kill_query(pid)
 
 	def __on_action_refresh(self) -> None:
 		"""
 		Called when the refresh action is triggered.
 		"""
 		LOG.debug("Refresh.")
-		# TODO: Query for activity.
-		# TODO: Update activity table.
+		self.__activity_model.refresh()
+
+	def __on_connect_submit(self, data: ConnectDialogData) -> None:
+		"""
+		Called when the connect dialog is submitted.
+
+		*data* (:class:`ConnectDialogData`) is the dialog data.
+		"""
+		LOG.debug("Connect submit.")
+		# TODO: On success:
+		# - Disconnect active connection.
+		# - Establish new connection.
+		# - Start activity refresh.
+
+
+
 
 	def open(self) -> None:
 		"""
@@ -210,35 +258,32 @@ class ActivityController(object):
 		LOG.debug("Create window.")
 
 		# Create window.
-		self.__window = QUiLoader().load(WINDOW_UI_FILE)
-		self.__set_title()
+		ui_result = QUiLoader().load(_WINDOW_UI_FILE)
+		assert isinstance(ui_result, QMainWindow), ui_result
+		self.__window = ui_result
+		self.__base_title = self.__window.windowTitle()
 
 		# Bind actions.
 		action_sel: ObjectSel
 		for action_sel, callback in [
-			(ACTION_CANCEL_QUERY, self.__on_action_cancel_query),
-			(ACTION_CONNECT, self.__on_action_connect),
-			(ACTION_DISCONNECT, self.__on_action_disconnect),
-			(ACTION_KILL_QUERY, self.__on_action_kill_query),
-			(ACTION_REFRESH, self.__on_action_refresh),
+			(_ACTION_CANCEL_QUERY, self.__on_action_cancel_query),
+			(_ACTION_CONNECT, self.__on_action_connect),
+			(_ACTION_DISCONNECT, self.__on_action_disconnect),
+			(_ACTION_KILL_QUERY, self.__on_action_kill_query),
+			(_ACTION_REFRESH, self.__on_action_refresh),
 		]:
-			action: Optional[QAction] = self.__window.findChild(*action_sel)  # type: ignore
-			if action is not None:
-				action.triggered: SignalInstance  # noqa
-				action.triggered.connect(callback)
-			else:
-				LOG.warning("Failed to find {cls}:{name}.".format(
-					cls=action_sel.type.__name__, name=action_sel.name,
-				))
+			action: QAction = self.__get_child(action_sel)
+			action.triggered: SignalInstance  # noqa
+			action.triggered.connect(callback)
 
 		# Initialize actions.
 		self.__disable_connected_actions()
 		self.__disable_selected_query_actions()
 
 		# Get widgets.
-		self.__activity_table = self.__window.findChild(*WIDGET_ACTIVITY_TABLE)
-		self.__query_text = self.__window.findChild(*WIDGET_QUERY_TEXT)
-		self.__status_bar = self.__window.findChild(*WIDGET_STATUS_BAR)
+		self.__activity_table = self.__get_child(_WIDGET_ACTIVITY_TABLE)
+		self.__query_text = self.__get_child(_WIDGET_QUERY_TEXT)
+		self.__status_bar = self.__get_child(_WIDGET_STATUS_BAR)
 
 		# Display window.
 		self.__window.show()
@@ -252,7 +297,7 @@ class ActivityController(object):
 		*prefix* (:class:`str` or :data:`None`) is the title prefix.
 		"""
 		# Build title.
-		title_parts = [prefix, TITLE]
+		title_parts = [prefix, self.__base_title]
 		title = " - ".join(filter(None, title_parts))
 
 		# Set title.
