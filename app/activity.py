@@ -27,8 +27,6 @@ LOG = logging.getLogger(__name__)
 The module logger.
 """
 
-# TODO: Implement connection.
-
 
 class PostgresActivityModel(object):
 	"""
@@ -59,15 +57,15 @@ class PostgresActivityModel(object):
 		connection parameters.
 		"""
 
-		self.__pg_version: Optional[Tuple[int, int]] = None
-		"""
-		*__pg_version* (:class:`tuple` of :class:`int`) is the version of the
-		PostgreSQL database.
-		"""
-
 		self.__pool: QThreadPool = pool
 		"""
 		*__pool* (:class:`QThreadPool`) is the thread worker pool.
+		"""
+
+		self.__version: Optional[Tuple[int, int]] = None
+		"""
+		*__version* (:class:`tuple` of :class:`int`) is the version of the
+		PostgreSQL database.
 		"""
 
 	def cancel_query(self, pid: int) -> WorkerFuture:
@@ -127,8 +125,51 @@ class PostgresActivityModel(object):
 		*conn* (:class:`psycopg2.extensions.connection`) is the PostgreSQL
 		connection.
 		"""
-		conn.rollback()
 		conn.close()
+
+	def connect(self) -> WorkerFuture:
+		"""
+		Connect to PostgreSQL.
+
+		Returns a :class:`WorkerFuture`. On success, the emitted result will be
+		:data:`None`.
+		"""
+		LOG.debug("Connect.")
+		if self.__conn:
+			self.close()
+
+		out_future = WorkerFuture()
+
+		# Connect to PostgreSQL.
+		params = self.__params
+		worker = Worker(lambda: self.__connect_work(params))
+		worker.signals.result.connect(lambda conn: self.__on_connect(conn, out_future))
+		worker.signals.error.connect(out_future.set_error)
+		self.__pool.start(worker)
+
+		return out_future
+
+	@staticmethod
+	def __connect_work(
+		params: 'PostgresConnectionParams',
+	) -> psycopg2.extensions.connection:
+		"""
+		Connect to PostgreSQL.
+
+		Returns the connection (:class:`psycopg2.extensions.connection`).
+		"""
+		conn = psycopg2.connect(
+			cursor_factory=psycopg2.extras.NamedTupleCursor,
+			database=params.database,
+			password=params.password,
+			port=params.port,
+			user=params.user,
+		)
+		conn.set_session(
+			autocommit=True,
+			readonly=True,
+		)
+		return conn
 
 	def fetch_activity(self) -> WorkerFuture:
 		"""
@@ -140,7 +181,7 @@ class PostgresActivityModel(object):
 		LOG.debug("Fetch activity.")
 		conn = self.__conn
 
-		if self.__pg_version >= (9, 2):
+		if self.__version >= (9, 2):
 			worker = Worker(lambda: self.__fetch_activity_work_ge_92(conn))
 		else:
 			worker = Worker(lambda: self.__fetch_activity_work_le_91(conn))
@@ -225,6 +266,69 @@ class PostgresActivityModel(object):
 		""")
 		return cursor.fetchall()  # type: ignore
 
+	@staticmethod
+	def __get_version_work(
+		conn: psycopg2.extensions.connection,
+	) -> Tuple[int, int]:
+		"""
+		Run the get version query.
+
+		*conn* (:class:`psycopg2.extensions.connection`) is the PostgreSQL
+		connection
+
+		Returns the version of the PostgreSQL version (:class:`tuple` of
+		:class:`int`).
+		"""
+		cursor = conn.cursor()
+		cursor.execute("""
+			SHOW server_version;
+		""")
+		row: _QueryVersionRow = cursor.fetchone()
+		version_parts = row.server_version.split(".", 2)[:2]
+		version = tuple(map(int, version_parts))
+		return version  # type: ignore
+
+	def __on_connect(
+		self,
+		conn: psycopg2.extensions.connection,
+		future: WorkerFuture,
+	) -> None:
+		"""
+		Called after the PostgreSQL connection has been established.
+
+		*conn* (:class:`psycopg2.extensions.connection`) is the PostgreSQL
+		connection.
+
+		*future* (:class:`WorkerFuture`) is the future for completing the
+		connection.
+		"""
+		LOG.debug(f"On connect {conn}.")
+		assert self.__conn is None, "Already connected."
+		self.__conn = conn
+
+		# Get PostgreSQL version.
+		worker = Worker(lambda: self.__get_version_work(conn))
+		worker.signals.result.connect(lambda ver: self.__on_connect_version(ver, future))
+		worker.signals.error.connect(future.set_error)
+		self.__pool.start(worker)
+
+	def __on_connect_version(
+		self,
+		version: Tuple[int, int],
+		future: WorkerFuture,
+	) -> None:
+		"""
+		Called after the PostgreSQL version of been retrieved.
+
+		*version* (:class:`tuple` of :class:`int`) is the PostgreSQL version.
+
+		*future* (:class:`WorkerFuture`) is the future for completing the
+		connection.
+		"""
+		LOG.debug(f"On connect version {version}.")
+		self.__version = version
+		future.set_result(None)
+
 	def terminate_query(self, pid: int) -> WorkerFuture:
 		"""
 		Terminate the query.
@@ -301,3 +405,7 @@ class _QueryFetchRow(NamedTuple):
 
 class _QueryTerminateRow(NamedTuple):
 	success: bool
+
+
+class _QueryVersionRow(NamedTuple):
+	server_version: str
