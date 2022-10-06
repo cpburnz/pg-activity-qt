@@ -1,5 +1,5 @@
 """
-This module defines the connect dialog.
+This module defines the connection dialog.
 """
 
 import dataclasses
@@ -74,7 +74,7 @@ The selector for the connect button.
 
 class ConnectDialogController(object):
 	"""
-	The :class:`ConnectDialogController` class manages the connect dialog.
+	The :class:`ConnectDialogController` class manages the connection dialog.
 	"""
 
 	def __init__(self) -> None:
@@ -124,7 +124,7 @@ class ConnectDialogController(object):
 
 	def open(self) -> None:
 		"""
-		Open the connect dialog.
+		Open the connection dialog.
 		"""
 		LOG.debug("Create dialog.")
 
@@ -149,7 +149,7 @@ class ConnectDialogController(object):
 
 	def __parse_form(self) -> 'ConnectDialogData':
 		"""
-		Parse the connect form.
+		Parse the connection form.
 
 		Returns the form data (:class:`ConnectDialogData`).
 		"""
