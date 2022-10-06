@@ -159,6 +159,12 @@ class ActivityController(object):
 		*window* (:class:`QMainWindow`) is the activity window.
 		"""
 
+	def __clear_table(self) -> None:
+		"""
+		Clear the activity table.
+		"""
+		# TODO
+
 	def __disable_connected_actions(self) -> None:
 		"""
 		Disable the menu actions that require an active connection.
@@ -247,6 +253,7 @@ class ActivityController(object):
 		self.__disable_selected_query_actions()
 		self.__stop_refresh()
 		self.__disconnect_model()
+		self.__clear_table()
 
 	def __on_action_kill_query(self) -> None:
 		"""
@@ -298,9 +305,8 @@ class ActivityController(object):
 		self.__disable_connected_actions()
 		self.__disable_selected_query_actions()
 		self.__stop_refresh()
-
-		# Disconnect the previous activity model.
 		self.__disconnect_model()
+		self.__clear_table()
 
 		# Establish new connection.
 		self.__activity_model = PostgresActivityModel(data.params)
@@ -317,11 +323,11 @@ class ActivityController(object):
 		# Clear refresh state.
 		self.__refresh_future = None
 
-		# TODO: Populate activity table.
-
+		# Populate activity table.
+		self.__populate_table(data)
 
 		# Schedule next refresh.
-		interval_ms = self.__refresh_interval * 1000
+		interval_ms = int(self.__refresh_interval * 1000)
 		self.__refresh_timer.setInterval(interval_ms)
 		self.__refresh_timer.start()
 
@@ -374,13 +380,21 @@ class ActivityController(object):
 		self.__status_bar = self.__get_child(_WIDGET_STATUS_BAR)
 
 		# Create refresh timer.
-		self.__refresh_timer = QTimer()
+		self.__refresh_timer = QTimer(self.__window)
 		self.__refresh_timer.setSingleShot(True)
+		self.__refresh_timer.timeout: SignalInstance  # noqa
+		self.__refresh_timer.timeout.connect(self.__start_refresh)
 
 		# Display window.
 		self.__window.show()
 
 		LOG.debug("Window created.")
+
+	def __populate_table(self, data: List[ActivityRow]) -> None:
+		"""
+		Populate the activity table.
+		"""
+		# TODO
 
 	def __set_title(self, prefix: Optional[str] = None) -> None:
 		"""
