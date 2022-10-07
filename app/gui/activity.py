@@ -4,13 +4,19 @@ This module defines the activity window.
 
 import logging
 from typing import (
+	Any,
 	List,
 	Optional,
 	cast)
 
 from PySide6.QtCore import (
+	QAbstractTableModel,
+	QItemSelectionModel,
+	QModelIndex,
 	QObject,
+	QSortFilterProxyModel,
 	QTimer,
+	Qt,
 	SignalInstance)
 from PySide6.QtGui import (
 	QAction)
@@ -23,8 +29,9 @@ from PySide6.QtUiTools import (
 	QUiLoader)
 
 from app.activity import (
+	ACTIVITY_HEADER,
 	ActivityRow,
-	PostgresActivityModel)
+	PostgresActivityManager)
 from app.threads import (
 	WorkerError,
 	WorkerFuture)
@@ -112,10 +119,15 @@ class ActivityController(object):
 		Initializes the :class:`ActivityController` instance.
 		"""
 
-		self.__activity_model: Optional[PostgresActivityModel] = None
+		self.__activity_model = cast(ActivityTableModel, None)
 		"""
-		*__activity_model* (:class:`PostgresActivityModel`) is used to monitor the
-		activity of the PostgreSQL database.
+		*__activity_model* (:class:`ActivityTableModel`) is the table model.
+		"""
+
+		self.__activity_proxy_model = cast(QSortFilterProxyModel, None)
+		"""
+		*__activity_proxy_model* (:class:`QSortFilterProxyModel`) is the sort proxy
+		model.
 		"""
 
 		self.__activity_table = cast(QTableWidget, None)
@@ -126,6 +138,12 @@ class ActivityController(object):
 		self.__base_title = cast(str, None)
 		"""
 		*base_title* (:class:`str`) is the base window title.
+		"""
+
+		self.__pg_activity: Optional[PostgresActivityManager] = None
+		"""
+		*__pg_activity* (:class:`PostgresActivityManager`) is used to monitor the
+		activity of the PostgreSQL database.
 		"""
 
 		self.__query_text = cast(QTextEdit, None)
@@ -163,7 +181,7 @@ class ActivityController(object):
 		"""
 		Clear the activity table.
 		"""
-		# TODO
+		self.__activity_model.set_data([])
 
 	def __disable_connected_actions(self) -> None:
 		"""
@@ -178,13 +196,13 @@ class ActivityController(object):
 		"""
 		self.__enable_actions(_MENU_SELECTED_QUERY_ACTIONS, False)
 
-	def __disconnect_model(self) -> None:
+	def __disconnect_pg(self) -> None:
 		"""
-		Disconnect the activity model.
+		Disconnect the PostgreSQL activity manager..
 		"""
-		activity_model, self.__activity_model = self.__activity_model, None
-		if activity_model is not None:
-			activity_model.close()
+		pg_activity, self.__pg_activity = self.__pg_activity, None
+		if pg_activity is not None:
+			pg_activity.close()
 
 	def __enable_actions(
 		self,
@@ -233,7 +251,7 @@ class ActivityController(object):
 		LOG.debug("Cancel query.")
 		pid = self.__get_selected_pid()
 		if pid is not None:
-			self.__activity_model.cancel_query(pid)
+			self.__pg_activity.cancel_query(pid)
 
 	def __on_action_connect(self) -> None:
 		"""
@@ -252,7 +270,7 @@ class ActivityController(object):
 		self.__disable_connected_actions()
 		self.__disable_selected_query_actions()
 		self.__stop_refresh()
-		self.__disconnect_model()
+		self.__disconnect_pg()
 		self.__clear_table()
 
 	def __on_action_kill_query(self) -> None:
@@ -262,7 +280,7 @@ class ActivityController(object):
 		LOG.debug("Kill query.")
 		pid = self.__get_selected_pid()
 		if pid is not None:
-			self.__activity_model.terminate_query(pid)
+			self.__pg_activity.terminate_query(pid)
 
 	def __on_action_refresh(self) -> None:
 		"""
@@ -278,7 +296,7 @@ class ActivityController(object):
 		*_result* is the result which is :data:`None`.
 		"""
 		LOG.debug("Connect done.")
-		params = self.__activity_model.params
+		params = self.__pg_activity.params
 		self.__set_title(f"{params.user}@{params.host}/{params.database}")
 		self.__enable_actions(_MENU_CONNECTED_ACTIONS, True)
 		self.__start_refresh()
@@ -305,12 +323,12 @@ class ActivityController(object):
 		self.__disable_connected_actions()
 		self.__disable_selected_query_actions()
 		self.__stop_refresh()
-		self.__disconnect_model()
+		self.__disconnect_pg()
 		self.__clear_table()
 
 		# Establish new connection.
-		self.__activity_model = PostgresActivityModel(data.params)
-		future = self.__activity_model.connect()
+		self.__pg_activity = PostgresActivityManager(data.params)
+		future = self.__pg_activity.connect()
 		future.add_result_callback(self.__on_connect_done)
 		future.add_error_callback(self.__on_connect_error)
 
@@ -320,6 +338,7 @@ class ActivityController(object):
 
 		*data* (:class:`list` of :class:`ActivityRow`) is the activity information.
 		"""
+		LOG.debug("Refresh done.")
 		# Clear refresh state.
 		self.__refresh_future = None
 
@@ -375,9 +394,18 @@ class ActivityController(object):
 		self.__disable_selected_query_actions()
 
 		# Get widgets.
-		self.__activity_table = self.__get_child(_WIDGET_ACTIVITY_TABLE)
+		self.__activity_table: QTableWidget = self.__get_child(_WIDGET_ACTIVITY_TABLE)
 		self.__query_text = self.__get_child(_WIDGET_QUERY_TEXT)
 		self.__status_bar = self.__get_child(_WIDGET_STATUS_BAR)
+
+		# Setup activity table.
+		self.__activity_model = ActivityTableModel(self.__activity_table)
+
+		self.__activity_proxy_model = QSortFilterProxyModel(self.__activity_table)
+		self.__activity_proxy_model.setDynamicSortFilter(True)
+		self.__activity_proxy_model.setSourceModel(self.__activity_model)
+
+		self.__activity_table.setModel(self.__activity_proxy_model)
 
 		# Create refresh timer.
 		self.__refresh_timer = QTimer(self.__window)
@@ -393,8 +421,36 @@ class ActivityController(object):
 	def __populate_table(self, data: List[ActivityRow]) -> None:
 		"""
 		Populate the activity table.
+
+		*data* (:class:`list` of :class:`ActivityRow`) is the activity data.
 		"""
-		# TODO
+		LOG.debug("Populate table.")
+
+		# Get PID for the selected row.
+		pid: Optional[int] = None
+		sel_model = self.__activity_table.selectionModel()
+		for proxy_index in sel_model.selectedRows():
+			LOG.debug(f"Old proxy index: {proxy_index.row()}")
+			source_index = self.__activity_proxy_model.mapToSource(proxy_index)
+			LOG.debug(f"Old source index: {source_index.row()}")
+			activity_row = self.__activity_model.get_data()[source_index.row()]
+			pid = activity_row.pid
+
+		LOG.debug(f"Selected PID: {pid}")
+
+		# Update activity data.
+		self.__activity_model.set_data(data)
+
+		# Reselect the row with the PID.
+		if pid is not None:
+			for i, activity_row in enumerate(data):
+				if pid == activity_row.pid:
+					source_index = self.__activity_model.index(i, 0)
+					LOG.debug(f"New source index: {source_index.row()}")
+					proxy_index = self.__activity_proxy_model.mapFromSource(source_index)
+					LOG.debug(f"New proxy index: {proxy_index.row()}")
+					sel_model.select(proxy_index, QItemSelectionModel.SelectCurrent)
+					break
 
 	def __set_title(self, prefix: Optional[str] = None) -> None:
 		"""
@@ -423,7 +479,7 @@ class ActivityController(object):
 		self.__refresh_timer.stop()
 
 		# Start refresh.
-		self.__refresh_future = self.__activity_model.fetch_activity()
+		self.__refresh_future = self.__pg_activity.fetch_activity()
 		self.__refresh_future.add_result_callback(self.__on_refresh_done)
 		self.__refresh_future.add_error_callback(self.__on_refresh_error)
 
@@ -434,3 +490,114 @@ class ActivityController(object):
 		LOG.debug("Stop refresh.")
 		self.__refresh_future = None
 		self.__refresh_timer.stop()
+
+
+# noinspection PyMethodOverriding
+class ActivityTableModel(QAbstractTableModel):
+	"""
+	The :class:`ActivityTableModel` class provides the Qt table model for the
+	PostgreSQL activity data.
+	"""
+
+	# Fix type hints.
+	dataChanged: SignalInstance
+
+	def __init__(self, parent: QObject) -> None:
+		"""
+		Initializes the :class:`ActivityTableModel` instance.
+
+		*parent* (:class:`QObject`) is the parent.
+		"""
+		super().__init__(parent)
+
+		self.__data: List[ActivityRow] = []
+		"""
+		*__data* (:class:`list` of :class:`ActivityRow`) is the activity data.
+		"""
+
+		self.__header = [
+			ACTIVITY_HEADER.get(__field, __field)
+			for __field in ActivityRow._fields
+		]
+		"""
+		*__header* (:class:`list` of :class:`str`) is the header names.
+		"""
+
+	def columnCount(self, index: QModelIndex) -> int:
+		"""
+		Get the number of columns.
+
+		*index* (:class:`QModelIndex`) is the table index.
+
+		Returns the column count (:class:`int`).
+		"""
+		return len(self.__header)
+
+	def data(self, index: QModelIndex, role: int) -> Optional[Any]:
+		"""
+		Get the datum for the role at the index.
+
+		*index* (:class:`QModelIndex`) is the table index.
+
+		*role* (:class:`int`) is the role enum value (:data:`Qt.DisplayRole`, etc.).
+
+		Returns the datum for the index.
+		"""
+		if not index.isValid():
+			return None
+
+		if role == Qt.DisplayRole:
+			return self.__data[index.row()][index.column()]
+
+	def get_data(self) -> List[ActivityRow]:
+		"""
+		Get the activity data.
+
+		Returns the activity data (:class:`list` of :class:`ActivityRow`).
+		"""
+		return self.__data
+
+	def headerData(
+		self,
+		column: int,
+		orientation: Qt.Orientation,
+		role: int,
+	) -> Optional[str]:
+		"""
+		Get the header datum for the role at the section (column).
+
+		*column* (:class:`int`) is the column index.
+
+		*orientation* (:class:`Qt.Orientation`) is the header orientation.
+
+		*role* (:class:`int`) is the role enum value (:data:`Qt.DisplayRole`, etc.).
+
+		Returns the datum for the column (:class:`str` or :data:`None`).
+		"""
+		if orientation == Qt.Horizontal and role == Qt.DisplayRole:
+			return self.__header[column]
+
+	def rowCount(self, index: QModelIndex) -> int:
+		"""
+		Get the number of rows.
+
+		*index* (:class:`QModelIndex`) is the table index.
+
+		Returns the row count (:class:`int`).
+		"""
+		return len(self.__data)
+
+	def set_data(self, data: List[ActivityRow]) -> None:
+		"""
+		Set the activity data.
+
+		*data* (:class:`list` of :class:`ActivityRow`) is the activity data.
+		"""
+		self.__data = data
+
+		# Emit signal that the model data changed.
+		last_row = len(data) - 1
+		last_column = len(self.__header) - 1
+		top_left = self.index(0, 0)
+		bottom_right = self.index(last_row, last_column)
+		self.dataChanged.emit(top_left, bottom_right)

@@ -1,6 +1,6 @@
 """
-This module defines the PostgreSQL activity model. The activity model is used to
-get the activity information from PostgreSQL.
+This module defines the PostgreSQL activity manager. The activity manager is
+used to get the activity information from PostgreSQL.
 """
 
 import dataclasses
@@ -22,21 +22,40 @@ from app.threads import (
 	Worker,
 	WorkerFuture)
 
+ACTIVITY_HEADER = {
+	'application_name': "Application Name",
+	'backend_start': "Backend Start",
+	'client_addr': "Client Address",
+	'client_hostname': "Client Host",
+	'client_port': "Client Port",
+	'datname': "Database",
+	'pid': "PID",
+	'query_start': "Query Start",
+	'state': "State",
+	'state_change': "State Change",
+	'usename': "User Name",
+	'wait_event': "Wait Event",
+	'xact_start': "Transaction Start",
+}
+"""
+Maps activity field name (:class:`str`) to header name (:class:`str`).
+"""
+
 LOG = logging.getLogger(__name__)
 """
 The module logger.
 """
 
 
-class PostgresActivityModel(object):
+class PostgresActivityManager(object):
 	"""
-	The :class:`PostgresActivityModel` class is used to get the activity
-	information from PostgreSQL.
+	The :class:`PostgresActivityManager` class is used to manage the connection to
+	PostgreSQL and monitor the database activity.
 	"""
 
 	def __init__(self, params: 'PostgresConnectionParams') -> None:
 		"""
-		Initializes the :class:`PostgresActivityModel` instance.
+		Initializes the :class:`PostgresActivityManager` instance.
 
 		*params* (:class:`PostgresConnectionParams`) contains the PostgreSQL
 		connection parameters.
