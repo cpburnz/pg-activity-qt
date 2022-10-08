@@ -3,6 +3,7 @@ This module defines the connection dialog.
 """
 
 import dataclasses
+import importlib.resources
 import logging
 from typing import (
 	cast)
@@ -16,10 +17,12 @@ from PySide6.QtWidgets import (
 	QDialogButtonBox,
 	QLineEdit,
 	QPushButton,
-	QSpinBox)
+	QSpinBox,
+	QWidget)
 from PySide6.QtUiTools import (
 	QUiLoader)
 
+import app.gui
 from app.activity import (
 	PostgresConnectionParams)
 from .util import (
@@ -107,7 +110,7 @@ class ConnectDialogController(object):
 		)
 		return child
 
-	def __on_accepted(self) -> None:
+	def __on_dialog_accepted(self) -> None:
 		"""
 		Called when the dialog is accepted.
 		"""
@@ -115,21 +118,25 @@ class ConnectDialogController(object):
 		form_data = self.__parse_form()
 		self.signals.accepted.emit(form_data)
 
-	def __on_rejected(self) -> None:
+	def __on_dialog_rejected(self) -> None:
 		"""
 		Called when the dialog is rejected.
 		"""
 		LOG.debug("Dialog rejected.")
 		self.signals.rejected.emit()
 
-	def open(self) -> None:
+	def open(self, parent: QWidget) -> None:
 		"""
 		Open the connection dialog.
+
+		*parent* (:class:`QWidget`) is the parent widget.
 		"""
 		LOG.debug("Create dialog.")
 
 		# Create dialog.
-		ui_result = QUiLoader().load(_DIALOG_UI_FILE)
+		with importlib.resources.path(app.gui, _DIALOG_UI_FILE) as ui_file:
+			ui_result = QUiLoader(parent).load(ui_file)
+
 		assert isinstance(ui_result, QDialog), ui_result
 		self.__dialog = ui_result
 
@@ -140,9 +147,9 @@ class ConnectDialogController(object):
 
 		# Bind signals.
 		self.__dialog.accepted: SignalInstance  # noqa
-		self.__dialog.accepted.connect(self.__on_accepted)
+		self.__dialog.accepted.connect(self.__on_dialog_accepted)
 		self.__dialog.rejected: SignalInstance  # noqa
-		self.__dialog.rejected.connect(self.__on_rejected)
+		self.__dialog.rejected.connect(self.__on_dialog_rejected)
 
 		# Display dialog.
 		self.__dialog.open()
@@ -204,7 +211,7 @@ class ConnectDialogSignals(QObject):
 	- NOTICE: Only a :class:`QObject` can define signals.
 	"""
 
-	accepted = Signal()
+	accepted = Signal(object)
 	"""
 	*accepted* (:class:`Signal`) is the signal emitted when the dialog is
 	accepted. This will be emitted with the form data (:class:`ConnectDialogData`).

@@ -194,17 +194,17 @@ class WorkerSignals(QObject):
 	- NOTICE: Only a :class:`QObject` can define signals.
 	"""
 
-	error = Signal()
+	error = Signal(object)
 	"""
 	*error* (:class:`Signal`) is the signal emitted when an exception occurs. This
 	will be emitted with a :class:`tuple` containing the exception object
 	(:class:`Exception`) and traceback text (:class:`str`).
 	"""
 
-	result = Signal()
+	result = Signal(object)
 	"""
 	*result* (:class:`Signal`) is the signal emitted when the function returns
-	successfully.
+	successfully. This will be emitted with the return value of the function.
 	"""
 
 	# Fix type hints.

@@ -33,7 +33,7 @@ def main(argv: List[str]) -> int:
 	app = QApplication(argv)
 	controller = ActivityController()
 	controller.open()
-	return app.exec_()
+	return app.exec()
 
 
 if __name__ == '__main__':

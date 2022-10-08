@@ -3,6 +3,7 @@ This module defines the PostgreSQL activity manager. The activity manager is
 used to get the activity information from PostgreSQL.
 """
 
+import collections
 import dataclasses
 import datetime
 import logging
@@ -22,23 +23,28 @@ from app.threads import (
 	Worker,
 	WorkerFuture)
 
-ACTIVITY_HEADER = {
-	'application_name': "Application Name",
-	'backend_start': "Backend Start",
-	'client_addr': "Client Address",
-	'client_hostname': "Client Host",
-	'client_port': "Client Port",
-	'datname': "Database",
-	'pid': "PID",
-	'query_start': "Query Start",
-	'state': "State",
-	'state_change': "State Change",
-	'usename': "User Name",
-	'wait_event': "Wait Event",
-	'xact_start': "Transaction Start",
-}
+ACTIVITY_HEADER = collections.OrderedDict([
+	('pid', "PID"),
+	('application_name', "Application"),
+	('datname', "Database"),
+	('backend_start', "Backend Start"),
+	('client_addr', "Client Address"),
+	('client_hostname', "Client Host"),
+	('client_port', "Client Port"),
+	('query_start', "Query Start"),
+	('state', "State"),
+	('state_change', "State Change"),
+	('usename', "User Name"),
+	('wait_event', "Wait Event"),
+	('xact_start', "Transaction Start"),
+])
 """
 Maps activity field name (:class:`str`) to header name (:class:`str`).
+"""
+
+_APP_NAME = "PostgreSQL Activity"
+"""
+The application name to use when connecting to PostgreSQL.
 """
 
 LOG = logging.getLogger(__name__)
@@ -96,7 +102,7 @@ class PostgresActivityManager(object):
 		Returns a :class:`WorkerFuture`. On success, the emitted result will be
 		whether the process was terminated (:class:`True`), or not (:class:`False`).
 		"""
-		LOG.debug("Cancel query.")
+		LOG.debug(f"Cancel query {pid}.")
 		conn = self.__connection
 		worker = Worker(lambda: self.__cancel_query_work(conn, pid))
 		future = worker.make_future()
@@ -121,7 +127,7 @@ class PostgresActivityManager(object):
 		Returns whether the process was terminated (:class:`True`), or not
 		(:class:`False`).
 		"""
-		LOG.debug("Cancel query work.")
+		LOG.debug(f"Cancel query work {pid}.")
 		cursor = conn.cursor()
 		cursor.execute("""
 			SELECT pg_cancel_backend(%(pid)s) AS success;
@@ -159,6 +165,7 @@ class PostgresActivityManager(object):
 		*conn* (:class:`psycopg2.extensions.connection`) is the PostgreSQL
 		connection.
 		"""
+		LOG.debug("Close work.")
 		conn.close()
 
 	def connect(self) -> WorkerFuture:
@@ -176,8 +183,8 @@ class PostgresActivityManager(object):
 		future = WorkerFuture()
 		params = self.params
 		worker = Worker(lambda: self.__connect_work(params))
-		worker.signals.result.connect(lambda conn: self.__on_connect(conn, future))
-		worker.signals.error.connect(future.set_error)
+		worker.signals.result.connect(lambda c: self.__on_connect(c, future))
+		worker.signals.error.connect(lambda e: future.set_error(e))
 		self.__pool.start(worker)
 
 		return future
@@ -193,9 +200,12 @@ class PostgresActivityManager(object):
 
 		Returns the connection (:class:`psycopg2.extensions.connection`).
 		"""
+		LOG.debug("Connect work.")
 		conn = psycopg2.connect(
+			application_name=_APP_NAME,
 			cursor_factory=psycopg2.extras.NamedTupleCursor,
 			database=params.database,
+			host=params.host,
 			password=params.password,
 			port=params.port,
 			user=params.user,
@@ -237,6 +247,7 @@ class PostgresActivityManager(object):
 
 		Returns the activity (:class:`list` of :class:`ActivityRow`).
 		"""
+		LOG.debug("Fetch activity work (v>=9.2).")
 		cursor = conn.cursor()
 		cursor.execute("""
 			SELECT
@@ -270,6 +281,7 @@ class PostgresActivityManager(object):
 
 		Returns the activity (:class:`list` of :class:`ActivityRow`).
 		"""
+		LOG.debug("Fetch activity work (v<=9.1).")
 		cursor = conn.cursor()
 		cursor.execute("""
 			SELECT
@@ -318,6 +330,7 @@ class PostgresActivityManager(object):
 		Returns the version of the PostgreSQL version (:class:`tuple` of
 		:class:`int`).
 		"""
+		LOG.debug("Get version work.")
 		cursor = conn.cursor()
 		cursor.execute("""
 			SHOW server_version;
@@ -347,8 +360,8 @@ class PostgresActivityManager(object):
 
 		# Get PostgreSQL version.
 		worker = Worker(lambda: self.__get_version_work(conn))
-		worker.signals.result.connect(lambda ver: self.__on_connect_version(ver, future))
-		worker.signals.error.connect(future.set_error)
+		worker.signals.result.connect(lambda v: self.__on_connect_version(v, future))
+		worker.signals.error.connect(lambda e: future.set_error(e))
 		self.__pool.start(worker)
 
 	def __on_connect_version(
@@ -379,7 +392,7 @@ class PostgresActivityManager(object):
 		Returns a :class:`WorkerFuture`. On success, the emitted result will be
 		whether the process was terminated (:class:`True`), or not (:class:`False`).
 		"""
-		LOG.debug("Terminate query.")
+		LOG.debug(f"Terminate query {pid}.")
 		conn = self.__connection
 		worker = Worker(lambda: self.__terminate_query_work(conn, pid))
 		future = worker.make_future()
@@ -404,6 +417,7 @@ class PostgresActivityManager(object):
 		Returns whether the process was terminated (:class:`True`), or not
 		(:class:`False`).
 		"""
+		LOG.debug(f"Terminate query work {pid}.")
 		cursor = conn.cursor()
 		cursor.execute("""
 			SELECT pg_terminate_backend(%(pid)s) AS success;
