@@ -145,11 +145,13 @@ class PostgresActivityManager(object):
 		LOG.debug("Close.")
 		if self.__connection is not None:
 			conn, self.__connection = self.__connection, None
-			worker = Worker(lambda: self.__close_work(conn))
+			#LOG.debug(f"CONNECTION: {conn!r} => {self.__connection!r}")
+			worker = Worker(lambda c=conn: self.__close_work(c))
 			future = worker.make_future()
 			self.__pool.start(worker)
 
 		else:
+			LOG.debug(f"CONNECTION: {self.__connection!r} => {self.__connection!r}")
 			future = WorkerFuture()
 			future.set_result(None)
 
@@ -166,7 +168,9 @@ class PostgresActivityManager(object):
 		connection.
 		"""
 		LOG.debug("Close work.")
+		LOG.debug("CONNECTION (BEFORE): {!r}".format(conn))
 		conn.close()
+		LOG.debug("CONNECTION (AFTER): {!r}".format(conn))
 
 	def connect(self) -> WorkerFuture:
 		"""

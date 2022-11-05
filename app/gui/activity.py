@@ -6,6 +6,7 @@ import datetime
 import importlib.resources
 import logging
 from typing import (
+	Any,
 	List,
 	Optional,
 	Union,
@@ -13,7 +14,6 @@ from typing import (
 
 from PySide6.QtCore import (
 	QAbstractTableModel,
-	QItemSelectionModel,
 	QModelIndex,
 	QObject,
 	QSortFilterProxyModel,
@@ -129,8 +129,7 @@ class ActivityController(object):
 
 		self.__activity_proxy_model = cast(QSortFilterProxyModel, None)
 		"""
-		*__activity_proxy_model* (:class:`QSortFilterProxyModel`) is the sort proxy
-		model.
+		*__activity_proxy_model* (:class:`QSortFilterProxyModel`) is the sort proxy model.
 		"""
 
 		self.__activity_table = cast(QTableView, None)
@@ -277,6 +276,16 @@ class ActivityController(object):
 		Called when the disconnect action is triggered.
 		"""
 		LOG.debug("Disconnect action.")
+
+		# TODO: CRASH!
+		# ERROR: Crash on disconnect.
+		'''
+		2022-10-20 18:50:47 [MainThread app.gui.activity] DEBUG: Disconnect action.
+		2022-10-20 18:50:47 [MainThread app.gui.activity] DEBUG: Stop refresh.
+		2022-10-20 18:50:47 [MainThread app.activity] DEBUG: Close.
+		2022-10-20 18:50:47 [Dummy-2 app.activity] DEBUG: Close work.
+		./dev/venv.sh: line 32:  3442 Segmentation fault      (core dumped) "$@"
+		'''
 
 		# Disconnect active connection.
 		self.__disable_connected_actions()
@@ -573,7 +582,7 @@ class ActivityTableModel(QAbstractTableModel):
 		"""
 		return len(self.__column_titles)
 
-	def data(self, index: QModelIndex, role: int) -> Optional[Union[str]]:
+	def data(self, index: QModelIndex, role: int) -> Optional[Any]:
 		"""
 		Get the datum for the role at the index.
 
@@ -581,20 +590,17 @@ class ActivityTableModel(QAbstractTableModel):
 
 		*role* (:class:`int`) is the role enum value (:data:`Qt.DisplayRole`, etc.).
 
-		Returns the datum for the index (:class:`str` or :data:`None`).
+		Returns the datum for the index.
 		"""
 		#if not index.isValid():
 		#	return None
 
 		if role == Qt.DisplayRole:
 			value = self.__data[index.row()][index.column()]
-			if value is None:
-				return ""
-
-			elif isinstance(value, datetime.datetime):
+			if isinstance(value, datetime.datetime):
 				return value.strftime("%Y-%m-%d %H:%M:%S %z")
 
-			return str(value)
+			return value
 
 	def get_data(self) -> List[ActivityRow]:
 		"""
@@ -653,3 +659,18 @@ class ActivityTableModel(QAbstractTableModel):
 
 		# Emit signal that the model rows have changed.
 		self.layoutChanged.emit()
+
+
+class SortProxyModel(QSortFilterProxyModel):
+	"""
+	The :class:`SortProxyModel` class provides sorting over the underlying table
+	model.
+	"""
+
+	def __init__(self, parent: QObject) -> None:
+		"""
+		Initializes the :class:`ActivityTableModel` instance.
+
+		*parent* (:class:`QObject`) is the parent.
+		"""
+		super().__init__(parent)
