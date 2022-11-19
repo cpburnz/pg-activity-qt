@@ -2,6 +2,7 @@
 This module defines the activity window.
 """
 
+import asyncio
 import datetime
 import importlib.resources
 import logging
@@ -17,30 +18,28 @@ from PySide6.QtCore import (
 	QModelIndex,
 	QObject,
 	QSortFilterProxyModel,
-	QTimer,
 	Qt,
 	SignalInstance)
 from PySide6.QtGui import (
 	QAction)
 from PySide6.QtWidgets import (
+	QApplication,
 	QMainWindow,
 	QStatusBar,
 	QTableView,
 	QTextEdit)
 from PySide6.QtUiTools import (
 	QUiLoader)
+from qasync import (
+	asyncSlot)
 
 import app.gui
 from app.activity import (
 	ACTIVITY_HEADER,
 	ActivityRow,
 	PostgresActivityManager)
-from app.threads import (
-	WorkerError,
-	WorkerFuture)
 from .connect import (
-	ConnectDialogController,
-	ConnectDialogData)
+	ConnectDialogController)
 from .util import (
 	ObjectSel,
 	find_child)
@@ -142,12 +141,6 @@ class ActivityController(object):
 		*base_title* (:class:`str`) is the base window title.
 		"""
 
-		self.__connect_controller: Optional[ConnectDialogController] = None
-		"""
-		*__connect_controller* (:class:`ConnectDialogController` or :data:`None`) is
-		the connection dialog controller while it is active.
-		"""
-
 		self.__pg_activity: Optional[PostgresActivityManager] = None
 		"""
 		*__pg_activity* (:class:`PostgresActivityManager`) is used to monitor the
@@ -159,20 +152,15 @@ class ActivityController(object):
 		*__query_text* (:class:`QTextEdit`) is the query text widget.
 		"""
 
-		self.__refresh_future: Optional[WorkerFuture] = None
-		"""
-		*__refresh_future* (:class:`WorkerFuture` or :data:`None`) is the
-		future for the active refresh.
-		"""
-
 		self.__refresh_interval = 10.0
 		"""
 		*__refresh_interval* (:class:`float`) is the refresh interval (in seconds).
 		"""
 
-		self.__refresh_timer = cast(QTimer, None)
+		self.__refresh_task: Optional[asyncio.Task] = None
 		"""
-		*__refresh_timer* (:class:`QTimer`) is the refresh timer.
+		*__refresh_task* (:class:`asyncio.TimerHandle` or :data:`None`) is the
+		active refresh task.
 		"""
 
 		self.__status_bar = cast(QStatusBar, None)
@@ -191,6 +179,40 @@ class ActivityController(object):
 		"""
 		self.__activity_model.set_data([])
 
+	async def __delayed_refresh(self) -> None:
+		"""
+		Refresh the PostgreSQL activity after a delay.
+		"""
+		# Delay before refresh.
+		LOG.debug("Refresh delay.")
+		try:
+			await asyncio.sleep(self.__refresh_interval)
+		except asyncio.CancelledError:
+			return
+
+		# Refresh activity.
+		LOG.debug("Refresh activity.")
+		try:
+			results = await self.__pg_activity.fetch_activity()
+
+		except Exception:
+			LOG.exception("Refresh error.")
+
+			# Clear refresh state.
+			self.__refresh_task = None
+
+		else:
+			LOG.debug(f"Refresh done: {len(results)} rows.")
+
+			# Clear refresh state.
+			self.__refresh_task = None
+
+			# Populate activity table.
+			self.__populate_table(results)
+
+			# Schedule next refresh.
+			self.__start_refresh()
+
 	def __disable_connected_actions(self) -> None:
 		"""
 		Disable the menu actions that require an active connection.
@@ -204,13 +226,13 @@ class ActivityController(object):
 		"""
 		self.__enable_actions(_MENU_SELECTED_QUERY_ACTIONS, False)
 
-	def __disconnect_pg(self) -> None:
+	async def __disconnect_pg(self) -> None:
 		"""
-		Disconnect the PostgreSQL activity manager..
+		Disconnect the PostgreSQL activity manager.
 		"""
 		pg_activity, self.__pg_activity = self.__pg_activity, None
 		if pg_activity is not None:
-			pg_activity.close()
+			await pg_activity.close()
 
 	def __enable_actions(
 		self,
@@ -252,159 +274,95 @@ class ActivityController(object):
 		"""
 		# TODO: Get PID from activity table.
 
-	def __on_action_cancel_query(self) -> None:
+	@asyncSlot()
+	async def __on_action_cancel_query(self) -> None:
 		"""
 		Called when the cancel query action is triggered.
 		"""
 		LOG.debug("Cancel query action.")
 		pid = self.__get_selected_pid()
 		if pid is not None:
-			self.__pg_activity.cancel_query(pid)
+			await self.__pg_activity.cancel_query(pid)
 
-	def __on_action_connect(self) -> None:
+	@asyncSlot()
+	async def __on_action_connect(self) -> None:
 		"""
 		Called when the connect action is triggered.
 		"""
 		LOG.debug("Connect action.")
-		self.__connect_controller = ConnectDialogController()
-		self.__connect_controller.signals.accepted.connect(self.__on_connect_dialog_accepted)
-		self.__connect_controller.signals.rejected.connect(self.__on_connect_dialog_rejected)
-		self.__connect_controller.open(self.__window)
 
-	def __on_action_disconnect(self) -> None:
+		# Open connect dialog.
+		dialog = ConnectDialogController()
+		data = await dialog.open(self.__window)
+
+		if data is not None:
+			LOG.debug("Connect dialog accepted.")
+
+			# Disconnect active connection.
+			self.__disable_connected_actions()
+			self.__disable_selected_query_actions()
+			self.__stop_refresh()
+			self.__clear_table()
+			self.__set_title()
+			await self.__disconnect_pg()
+
+			# Establish new connection.
+			self.__pg_activity = PostgresActivityManager(data.params)
+			try:
+				await self.__pg_activity.connect()
+
+			except Exception:
+				LOG.debug("Connect error.")
+				LOG.exception("Failed to establish connection.")
+
+			else:
+				LOG.debug("Connect done.")
+				params = self.__pg_activity.params
+				self.__set_title(f"{params.user}@{params.host}/{params.database}")
+				self.__enable_actions(_MENU_CONNECTED_ACTIONS, True)
+				self.__start_refresh()
+
+		else:
+			LOG.debug("Connect dialog rejected.")
+
+	@asyncSlot()
+	async def __on_action_disconnect(self) -> None:
 		"""
 		Called when the disconnect action is triggered.
 		"""
 		LOG.debug("Disconnect action.")
 
-		# TODO: CRASH!
-		# ERROR: Crash on disconnect.
-		'''
-		2022-10-20 18:50:47 [MainThread app.gui.activity] DEBUG: Disconnect action.
-		2022-10-20 18:50:47 [MainThread app.gui.activity] DEBUG: Stop refresh.
-		2022-10-20 18:50:47 [MainThread app.activity] DEBUG: Close.
-		2022-10-20 18:50:47 [Dummy-2 app.activity] DEBUG: Close work.
-		./dev/venv.sh: line 32:  3442 Segmentation fault      (core dumped) "$@"
-		'''
-
 		# Disconnect active connection.
 		self.__disable_connected_actions()
 		self.__disable_selected_query_actions()
 		self.__stop_refresh()
-		self.__disconnect_pg()
 		self.__clear_table()
 		self.__set_title()
+		await self.__disconnect_pg()
 
-	def __on_action_kill_query(self) -> None:
+	@asyncSlot()
+	async def __on_action_kill_query(self) -> None:
 		"""
 		Called when the kill query action is triggered.
 		"""
 		LOG.debug("Kill query action.")
 		pid = self.__get_selected_pid()
 		if pid is not None:
-			self.__pg_activity.terminate_query(pid)
+			await self.__pg_activity.terminate_query(pid)
 
-	def __on_action_refresh(self) -> None:
+	@asyncSlot()
+	async def __on_action_refresh(self) -> None:
 		"""
 		Called when the refresh action is triggered.
 		"""
 		LOG.debug("Refresh action.")
 		self.__start_refresh()
 
-	def __on_connect_dialog_accepted(self, data: ConnectDialogData) -> None:
-		"""
-		Called when the connection dialog is accepted.
-
-		*data* (:class:`ConnectDialogData`) is the dialog data.
-		"""
-		LOG.debug("Connect dialog accepted.")
-
-		# Clear connection controller state.
-		self.__connect_controller = None
-
-		# Disconnect active connection.
-		self.__disable_connected_actions()
-		self.__disable_selected_query_actions()
-		self.__stop_refresh()
-		self.__disconnect_pg()
-		self.__clear_table()
-		self.__set_title()
-
-		# Establish new connection.
-		self.__pg_activity = PostgresActivityManager(data.params)
-		future = self.__pg_activity.connect()
-		future.add_result_callback(self.__on_connect_init_done)
-		future.add_error_callback(self.__on_connect_init_error)
-
-	def __on_connect_dialog_rejected(self) -> None:
-		"""
-		Called when the connection dialog is rejected.
-		"""
-		LOG.debug("Connect dialog rejected.")
-		self.__connect_controller = None
-
-	def __on_connect_init_done(self, _result: None) -> None:
-		"""
-		Called when the connection has been established.
-
-		*_result* is the result which is :data:`None`.
-		"""
-		LOG.debug("Connect done.")
-		params = self.__pg_activity.params
-		self.__set_title(f"{params.user}@{params.host}/{params.database}")
-		self.__enable_actions(_MENU_CONNECTED_ACTIONS, True)
-		self.__start_refresh()
-
-	def __on_connect_init_error(self, error: WorkerError) -> None:
-		"""
-		Called when there is an error establishing the connection.
-
-		*error* (:class:`WorkerError`) is the error.
-		"""
-		LOG.debug("Connect error.")
-		LOG.error("Error establishing connection: {value}\n{traceback}".format(
-			value=error.value, traceback=error.traceback,
-		))
-
-	def __on_refresh_done(self, data: List[ActivityRow]) -> None:
-		"""
-		Called when the activity information is available from the refresh.
-
-		*data* (:class:`list` of :class:`ActivityRow`) is the activity information.
-		"""
-		LOG.debug(f"Refresh done: {len(data)} rows.")
-
-		# Clear refresh state.
-		self.__refresh_future = None
-
-		# Populate activity table.
-		self.__populate_table(data)
-
-		# Schedule next refresh.
-		LOG.debug("TODO: Enable refresh timer.")
-		'''
-		interval_ms = int(self.__refresh_interval * 1000)
-		self.__refresh_timer.setInterval(interval_ms)
-		self.__refresh_timer.start()
-		'''
-
-	def __on_refresh_error(self, error: WorkerError) -> None:
-		"""
-		Called when there is an error refreshing the activity information.
-
-		*error* (:class:`WorkerError`) is the error.
-		"""
-		LOG.debug("Refresh error.")
-		LOG.error("{value}\n{traceback}".format(
-			value=error.value, traceback=error.traceback,
-		))
-
-		# Clear refresh state.
-		self.__refresh_future = None
-
-	def open(self) -> None:
+	async def run(self) -> int:
 		"""
 		Open the activity window.
+
+		Returns the status code (:class:`int`).
 		"""
 		LOG.debug("Create window.")
 
@@ -449,16 +407,19 @@ class ActivityController(object):
 		self.__activity_table.setModel(self.__activity_proxy_model)
 		self.__activity_table.sortByColumn(pid_column, Qt.AscendingOrder)
 
-		# Create refresh timer.
-		self.__refresh_timer = QTimer(self.__window)
-		self.__refresh_timer.setSingleShot(True)
-		self.__refresh_timer.timeout: SignalInstance  # noqa
-		self.__refresh_timer.timeout.connect(self.__start_refresh)
-
 		# Display window.
 		self.__window.show()
 
 		LOG.debug("Window created.")
+
+		# Wait for application to close.
+		stop_future = asyncio.Future()
+		qapp = QApplication.instance()
+		qapp.aboutToQuit: SignalInstance  # noqa
+		qapp.aboutToQuit.connect(lambda: stop_future.set_result(None))
+		await stop_future
+
+		return 1
 
 	def __populate_table(self, data: List[ActivityRow]) -> None:
 		"""
@@ -511,27 +472,21 @@ class ActivityController(object):
 		"""
 		Start monitoring the activity of PostgreSQL.
 		"""
-		if self.__refresh_future is not None:
+		if self.__refresh_task is not None:
 			LOG.debug("Refresh in progress.")
 			return
 
 		LOG.debug("Start refresh.")
-
-		# Cancel delayed refresh.
-		self.__refresh_timer.stop()
-
-		# Start refresh.
-		self.__refresh_future = self.__pg_activity.fetch_activity()
-		self.__refresh_future.add_result_callback(self.__on_refresh_done)
-		self.__refresh_future.add_error_callback(self.__on_refresh_error)
+		self.__refresh_task = asyncio.create_task(self.__delayed_refresh())
 
 	def __stop_refresh(self) -> None:
 		"""
 		Stop monitoring the activity of PostgreSQL.
 		"""
 		LOG.debug("Stop refresh.")
-		self.__refresh_future = None
-		self.__refresh_timer.stop()
+		task, self.__refresh_task = self.__refresh_task, None
+		if task is not None:
+			task.cancel()
 
 
 # noinspection PyMethodOverriding

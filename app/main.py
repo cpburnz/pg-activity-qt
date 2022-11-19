@@ -7,8 +7,7 @@ import sys
 from typing import (
 	List)
 
-from PySide6.QtWidgets import (
-	QApplication)
+import qasync
 
 from app.gui.activity import (
 	ActivityController)
@@ -30,10 +29,8 @@ def main(argv: List[str]) -> int:
 	log.addHandler(handler)
 
 	# Create application.
-	app = QApplication(argv)
 	controller = ActivityController()
-	controller.open()
-	return app.exec()
+	return qasync.run(controller.run())
 
 
 if __name__ == '__main__':

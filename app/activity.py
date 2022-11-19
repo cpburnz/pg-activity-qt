@@ -13,15 +13,8 @@ from typing import (
 	Optional,
 	Tuple)
 
-import psycopg2
-import psycopg2.extensions
+import aiopg
 import psycopg2.extras
-from PySide6.QtCore import (
-	QThreadPool)
-
-from app.threads import (
-	Worker,
-	WorkerFuture)
 
 ACTIVITY_HEADER = collections.OrderedDict([
 	('pid', "PID"),
@@ -66,14 +59,11 @@ class PostgresActivityManager(object):
 		*params* (:class:`PostgresConnectionParams`) contains the PostgreSQL
 		connection parameters.
 		"""
-		# Create thread pool.
-		pool = QThreadPool()
-		pool.setMaxThreadCount(1)
 
-		self.__connection: Optional[psycopg2.extensions.connection] = None
+		self.__connection: Optional[aiopg.Connection] = None
 		"""
-		*__connection* (:class:`psycopg2.extensions.connection` or :data:`None`) is
-		the PostgreSQL connection.
+		*__connection* (:class:`aiopg.Connection` or :data:`None`) is the PostgreSQL
+		connection.
 		"""
 
 		self.params: PostgresConnectionParams = params
@@ -82,352 +72,173 @@ class PostgresActivityManager(object):
 		connection parameters.
 		"""
 
-		self.__pool: QThreadPool = pool
-		"""
-		*__pool* (:class:`QThreadPool`) is the thread worker pool.
-		"""
-
 		self.__version: Optional[Tuple[int, ...]] = None
 		"""
 		*__version* (:class:`tuple` of :class:`int`) is the version of the
 		PostgreSQL database.
 		"""
 
-	def cancel_query(self, pid: int) -> WorkerFuture:
+	async def cancel_query(self, pid: int) -> bool:
 		"""
 		Cancel the query.
 
 		*pid* (:class:`int`) is the PID of the backend process.
 
-		Returns a :class:`WorkerFuture`. On success, the emitted result will be
-		whether the process was terminated (:class:`True`), or not (:class:`False`).
-		"""
-		LOG.debug(f"Cancel query {pid}.")
-		conn = self.__connection
-		worker = Worker(lambda: self.__cancel_query_work(conn, pid))
-		future = worker.make_future()
-		self.__pool.start(worker)
-		return future
-
-	@staticmethod
-	def __cancel_query_work(
-		conn: psycopg2.extensions.connection,
-		pid: int,
-	) -> bool:
-		"""
-		Run the cancel query.
-
-		- WARNING: This must be run within a worker thread.
-
-		*conn* (:class:`psycopg2.extensions.connection`) is the PostgreSQL
-		connection.
-
-		*pid* (:class:`int`) is the PID of the backend process.
-
 		Returns whether the process was terminated (:class:`True`), or not
 		(:class:`False`).
 		"""
-		LOG.debug(f"Cancel query work {pid}.")
-		cursor = conn.cursor()
-		cursor.execute("""
-			SELECT pg_cancel_backend(%(pid)s) AS success;
-		""", {'pid': pid})
-		row: _QueryCancelRow = cursor.fetchone()
-		return row.success
+		LOG.debug(f"Cancel query {pid}.")
+		async with self.__connection.cursor() as cursor:
+			await cursor.execute("""
+				SELECT pg_cancel_backend(%(pid)s) AS success;
+			""", {'pid': pid})
+			row: _QueryCancelRow = await cursor.fetchone()
+			return row.success
 
-	def close(self) -> WorkerFuture:
+	async def close(self) -> None:
 		"""
 		Disconnect from PostgreSQL.
-
-		Returns a :class:`WorkerFuture`. On success, the emitted result will be
-		:data:`None`.
 		"""
 		LOG.debug("Close.")
-		if self.__connection is not None:
-			conn, self.__connection = self.__connection, None
-			#LOG.debug(f"CONNECTION: {conn!r} => {self.__connection!r}")
-			worker = Worker(lambda c=conn: self.__close_work(c))
-			future = worker.make_future()
-			self.__pool.start(worker)
+		conn, self.__connection = self.__connection, None
+		if conn is not None:
+			await conn.close()
 
-		else:
-			LOG.debug(f"CONNECTION: {self.__connection!r} => {self.__connection!r}")
-			future = WorkerFuture()
-			future.set_result(None)
-
-		return future
-
-	@staticmethod
-	def __close_work(conn: psycopg2.extensions.connection) -> None:
-		"""
-		Close the PostgreSQL connection.
-
-		- WARNING: This must be run within a worker thread.
-
-		*conn* (:class:`psycopg2.extensions.connection`) is the PostgreSQL
-		connection.
-		"""
-		LOG.debug("Close work.")
-		LOG.debug("CONNECTION (BEFORE): {!r}".format(conn))
-		conn.close()
-		LOG.debug("CONNECTION (AFTER): {!r}".format(conn))
-
-	def connect(self) -> WorkerFuture:
+	async def connect(self) -> None:
 		"""
 		Connect to PostgreSQL.
-
-		Returns a :class:`WorkerFuture`. On success, the emitted result will be
-		:data:`None`.
 		"""
 		LOG.debug("Connect.")
-		if self.__connection:
-			self.close()
+		if self.__connection is not None:
+			await self.close()
 
 		# Connect to PostgreSQL.
-		future = WorkerFuture()
-		params = self.params
-		worker = Worker(lambda: self.__connect_work(params))
-		worker.signals.result.connect(lambda c: self.__on_connect(c, future))
-		worker.signals.error.connect(lambda e: future.set_error(e))
-		self.__pool.start(worker)
-
-		return future
-
-	@staticmethod
-	def __connect_work(
-		params: 'PostgresConnectionParams',
-	) -> psycopg2.extensions.connection:
-		"""
-		Connect to PostgreSQL.
-
-		- WARNING: This must be run within a worker thread.
-
-		Returns the connection (:class:`psycopg2.extensions.connection`).
-		"""
-		LOG.debug("Connect work.")
-		conn = psycopg2.connect(
+		self.__connection = await aiopg.connect(
 			application_name=_APP_NAME,
 			cursor_factory=psycopg2.extras.NamedTupleCursor,
-			database=params.database,
-			host=params.host,
-			password=params.password,
-			port=params.port,
-			user=params.user,
+			database=self.params.database,
+			host=self.params.host,
+			password=self.params.password,
+			port=self.params.port,
+			user=self.params.user,
 		)
-		conn.set_session(
-			autocommit=True,
-			readonly=True,
-		)
-		return conn
 
-	def fetch_activity(self) -> WorkerFuture:
+		# Get PostgreSQL version.
+		self.__version = await self.__get_version()
+
+	async def fetch_activity(self) -> List['ActivityRow']:
 		"""
 		Fetch the current activity from PostgreSQL.
 
-		Returns a :class:`WorkerFuture`. On success, the emitted result will be a
-		:class:`list` of :class:`ActivityRow`.
+		Returns a the activity (:class:`list` of :class:`ActivityRow`).
 		"""
 		LOG.debug("Fetch activity.")
-		conn = self.__connection
-
 		if self.__version >= (9, 2):
-			worker = Worker(lambda: self.__fetch_activity_work_ge_92(conn))
+			return await self.__fetch_activity_ge_92()
 		else:
-			worker = Worker(lambda: self.__fetch_activity_work_le_91(conn))
+			return await self.__fetch_activity_le_91()
 
-		future = worker.make_future()
-		self.__pool.start(worker)
-		return future
-
-	@staticmethod
-	def __fetch_activity_work_ge_92(
-		conn: psycopg2.extensions.connection,
-	) -> List['ActivityRow']:
+	async def __fetch_activity_ge_92(self) -> List['ActivityRow']:
 		"""
 		Run the fetch activity query for PostgreSQL 9.2 and above.
 
-		*conn* (:class:`psycopg2.extensions.connection`) is the PostgreSQL
-		connection.
-
 		Returns the activity (:class:`list` of :class:`ActivityRow`).
 		"""
-		LOG.debug("Fetch activity work (v>=9.2).")
-		cursor = conn.cursor()
-		cursor.execute("""
-			SELECT
-				application_name,
-				backend_start,
-				client_addr,
-				nullif(client_hostname, '') AS client_hostname,
-				client_port,
-				datname,
-				pid,
-				query_start,
-				state,
-				state_change,
-				usename,
-				wait_event,
-				xact_start
-			FROM pg_stat_activity
-			ORDER BY backend_start ASC;
-		""")
-		return cursor.fetchall()  # type: ignore
+		LOG.debug("Fetch activity (v>=9.2).")
+		async with self.__connection.cursor() as cursor:
+			await cursor.execute("""
+				SELECT
+					application_name,
+					backend_start,
+					client_addr,
+					nullif(client_hostname, '') AS client_hostname,
+					client_port,
+					datname,
+					pid,
+					query_start,
+					state,
+					state_change,
+					usename,
+					wait_event,
+					xact_start
+				FROM pg_stat_activity
+				ORDER BY backend_start ASC;
+			""")
+			return await cursor.fetchall()
 
-	@staticmethod
-	def __fetch_activity_work_le_91(
-		conn: psycopg2.extensions.connection,
-	) -> List['ActivityRow']:
+	async def __fetch_activity_le_91(self) -> List['ActivityRow']:
 		"""
 		Run the fetch activity query for PostgreSQL 9.1 and below.
 
-		*conn* (:class:`psycopg2.extensions.connection`) is the PostgreSQL
-		connection.
-
 		Returns the activity (:class:`list` of :class:`ActivityRow`).
 		"""
-		LOG.debug("Fetch activity work (v<=9.1).")
-		cursor = conn.cursor()
-		cursor.execute("""
-			SELECT
-				application_name,
-				backend_start,
-				client_addr,
-				client_hostname,
-				client_port,
-				datname,
-				procpid AS pid,
-				query_start,
-				(CASE
-					WHEN current_query = '<IDLE>'
-						THEN 'idle'
-					WHEN current_query = '<IDLE> in transaction'
-						THEN 'idle in transaction'
-					WHEN current_query = '<IDLE> in transaction (aborted)'
-						THEN 'idle in transaction (aborted)'
-					ELSE
-						(CASE WHEN current_query LIKE '<IDLE>%'
-							THEN current_query
-							ELSE 'active'
-						END)
-				END) AS state,
-				NULL::text AS state_change,
-				usename,
-				waiting as wait_event,
-				xact_start
-			FROM pg_stat_activity
-			ORDER BY backend_start ASC;
-		""")
-		return cursor.fetchall()  # type: ignore
+		LOG.debug("Fetch activity (v<=9.1).")
+		async with self.__connection.cursor() as cursor:
+			await cursor.execute("""
+				SELECT
+					application_name,
+					backend_start,
+					client_addr,
+					client_hostname,
+					client_port,
+					datname,
+					procpid AS pid,
+					query_start,
+					(CASE
+						WHEN current_query = '<IDLE>'
+							THEN 'idle'
+						WHEN current_query = '<IDLE> in transaction'
+							THEN 'idle in transaction'
+						WHEN current_query = '<IDLE> in transaction (aborted)'
+							THEN 'idle in transaction (aborted)'
+						ELSE
+							(CASE WHEN current_query LIKE '<IDLE>%'
+								THEN current_query
+								ELSE 'active'
+							END)
+					END) AS state,
+					NULL::text AS state_change,
+					usename,
+					waiting as wait_event,
+					xact_start
+				FROM pg_stat_activity
+				ORDER BY backend_start ASC;
+			""")
+			return await cursor.fetchall()
 
-	@staticmethod
-	def __get_version_work(
-		conn: psycopg2.extensions.connection,
-	) -> Tuple[int, ...]:
+	async def __get_version(self) -> Tuple[int, ...]:
 		"""
 		Run the get version query.
-
-		- WARNING: This must be run within a worker thread.
-
-		*conn* (:class:`psycopg2.extensions.connection`) is the PostgreSQL
-		connection
 
 		Returns the version of the PostgreSQL version (:class:`tuple` of
 		:class:`int`).
 		"""
-		LOG.debug("Get version work.")
-		cursor = conn.cursor()
-		cursor.execute("""
-			SHOW server_version;
-		""")
-		row: _QueryVersionRow = cursor.fetchone()
-		version_parts = row.server_version.split(".", 2)[:2]
-		version = tuple(map(int, version_parts))
-		return version
+		LOG.debug("Get version.")
+		async with self.__connection.cursor() as cursor:
+			await cursor.execute("""
+				SHOW server_version;
+			""")
+			row: _QueryVersionRow = await cursor.fetchone()
+			version_parts = row.server_version.split(".", 2)[:2]
+			version = tuple(map(int, version_parts))
+			return version
 
-	def __on_connect(
-		self,
-		conn: psycopg2.extensions.connection,
-		future: WorkerFuture,
-	) -> None:
-		"""
-		Called after the PostgreSQL connection has been established.
-
-		*conn* (:class:`psycopg2.extensions.connection`) is the PostgreSQL
-		connection.
-
-		*future* (:class:`WorkerFuture`) is the future for completing the
-		connection.
-		"""
-		LOG.debug(f"On connect {conn}.")
-		assert self.__connection is None, "Already connected."
-		self.__connection = conn
-
-		# Get PostgreSQL version.
-		worker = Worker(lambda: self.__get_version_work(conn))
-		worker.signals.result.connect(lambda v: self.__on_connect_version(v, future))
-		worker.signals.error.connect(lambda e: future.set_error(e))
-		self.__pool.start(worker)
-
-	def __on_connect_version(
-		self,
-		version: Tuple[int, ...],
-		future: WorkerFuture,
-	) -> None:
-		"""
-		Called after the PostgreSQL version of been retrieved.
-
-		- WARNING: This must be run within a worker thread.
-
-		*version* (:class:`tuple` of :class:`int`) is the PostgreSQL version.
-
-		*future* (:class:`WorkerFuture`) is the future for completing the
-		connection.
-		"""
-		LOG.debug(f"On connect version {version}.")
-		self.__version = version
-		future.set_result(None)
-
-	def terminate_query(self, pid: int) -> WorkerFuture:
+	async def terminate_query(self, pid: int) -> bool:
 		"""
 		Terminate the query.
 
 		*pid* (:class:`int`) is the PID of the backend process.
 
-		Returns a :class:`WorkerFuture`. On success, the emitted result will be
-		whether the process was terminated (:class:`True`), or not (:class:`False`).
-		"""
-		LOG.debug(f"Terminate query {pid}.")
-		conn = self.__connection
-		worker = Worker(lambda: self.__terminate_query_work(conn, pid))
-		future = worker.make_future()
-		self.__pool.start(worker)
-		return future
-
-	@staticmethod
-	def __terminate_query_work(
-		conn: psycopg2.extensions.connection,
-		pid: int,
-	) -> bool:
-		"""
-		Run the terminate query.
-
-		- WARNING: This must be run within a worker thread.
-
-		*conn* (:class:`psycopg2.extensions.connection`) is the PostgreSQL
-		connection.
-
-		*pid* (:class:`int`) is the PID of the backend process.
-
 		Returns whether the process was terminated (:class:`True`), or not
 		(:class:`False`).
 		"""
-		LOG.debug(f"Terminate query work {pid}.")
-		cursor = conn.cursor()
-		cursor.execute("""
-			SELECT pg_terminate_backend(%(pid)s) AS success;
-		""", {'pid': pid})
-		row: _QueryTerminateRow = cursor.fetchone()
-		return row.success
+		LOG.debug(f"Terminate query {pid}.")
+		async with self.__connection.cursor() as cursor:
+			await cursor.execute("""
+				SELECT pg_terminate_backend(%(pid)s) AS success;
+			""", {'pid': pid})
+			row: _QueryTerminateRow = await cursor.fetchone()
+			return row.success
 
 
 class ActivityRow(NamedTuple):
