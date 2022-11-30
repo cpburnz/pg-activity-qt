@@ -133,7 +133,9 @@ class PostgresActivityManager(object):
 		Returns a the activity (:class:`list` of :class:`ActivityRow`).
 		"""
 		LOG.debug("Fetch activity.")
-		if self.__version >= (9, 2):
+		if self.__version >= (9, 6):
+			return await self.__fetch_activity_ge_96()
+		elif self.__version >= (9, 2):
 			return await self.__fetch_activity_ge_92()
 		else:
 			return await self.__fetch_activity_le_91()
@@ -145,6 +147,36 @@ class PostgresActivityManager(object):
 		Returns the activity (:class:`list` of :class:`ActivityRow`).
 		"""
 		LOG.debug("Fetch activity (v>=9.2).")
+		async with self.__connection.cursor() as cursor:
+			await cursor.execute("""
+				SELECT
+					application_name,
+					backend_start,
+					client_addr,
+					nullif(client_hostname, '') AS client_hostname,
+					client_port,
+					datname,
+					pid,
+					query_start,
+					state,
+					state_change,
+					usename,
+					(CASE WHEN waiting
+						THEN 'Waiting'
+					END) AS wait_event,
+					xact_start
+				FROM pg_stat_activity
+				ORDER BY backend_start ASC;
+			""")
+			return await cursor.fetchall()
+
+	async def __fetch_activity_ge_96(self) -> List['ActivityRow']:
+		"""
+		Run the fetch activity query for PostgreSQL 9.6 and above.
+
+		Returns the activity (:class:`list` of :class:`ActivityRow`).
+		"""
+		LOG.debug("Fetch activity (v>=9.6).")
 		async with self.__connection.cursor() as cursor:
 			await cursor.execute("""
 				SELECT
@@ -199,7 +231,9 @@ class PostgresActivityManager(object):
 					END) AS state,
 					NULL::text AS state_change,
 					usename,
-					waiting as wait_event,
+					(CASE WHEN waiting
+						THEN 'Waiting'
+					END) AS wait_event,
 					xact_start
 				FROM pg_stat_activity
 				ORDER BY backend_start ASC;
@@ -219,7 +253,8 @@ class PostgresActivityManager(object):
 				SHOW server_version;
 			""")
 			row: _QueryVersionRow = await cursor.fetchone()
-			version_parts = row.server_version.split(".", 2)[:2]
+			LOG.debug(f"VERSION: {row.server_version}")
+			version_parts = row.server_version.split(" ", 1)[0].split(".", 2)[:2]
 			version = tuple(map(int, version_parts))
 			return version
 

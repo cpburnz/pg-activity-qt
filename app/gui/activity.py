@@ -31,6 +31,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtUiTools import (
 	QUiLoader)
 from qasync import (
+	asyncClose,
 	asyncSlot)
 
 import app.gui
@@ -152,6 +153,12 @@ class ActivityController(object):
 		*__query_text* (:class:`QTextEdit`) is the query text widget.
 		"""
 
+		self.__quit_future = cast(asyncio.Future, None)
+		"""
+		*__quit_future* (:class:`asyncio.Future`) is the future that will be
+		canceled when the Qt application is about to quit.
+		"""
+
 		self.__refresh_interval = 10.0
 		"""
 		*__refresh_interval* (:class:`float`) is the refresh interval (in seconds).
@@ -179,16 +186,24 @@ class ActivityController(object):
 		"""
 		self.__activity_model.set_data([])
 
-	async def __delayed_refresh(self) -> None:
+	async def __delayed_refresh(self, delay: bool) -> None:
 		"""
 		Refresh the PostgreSQL activity after a delay.
+
+		*delay* (:class:`bool`) is whether to delay the refresh.
 		"""
-		# Delay before refresh.
-		LOG.debug("Refresh delay.")
-		try:
-			await asyncio.sleep(self.__refresh_interval)
-		except asyncio.CancelledError:
-			return
+		if delay:
+			# Delay before refresh.
+			# - TODO: Refresh action does nothing because a delayed refresh is already
+			#   in progress.
+			LOG.debug("Refresh delay.")
+			try:
+				await asyncio.sleep(self.__refresh_interval)
+			except asyncio.CancelledError:
+				return
+
+		else:
+			LOG.debug("Refresh immediate.")
 
 		# Refresh activity.
 		LOG.debug("Refresh activity.")
@@ -211,7 +226,7 @@ class ActivityController(object):
 			self.__populate_table(results)
 
 			# Schedule next refresh.
-			self.__start_refresh()
+			self.__start_refresh(delay=True)
 
 	def __disable_connected_actions(self) -> None:
 		"""
@@ -320,7 +335,7 @@ class ActivityController(object):
 				params = self.__pg_activity.params
 				self.__set_title(f"{params.user}@{params.host}/{params.database}")
 				self.__enable_actions(_MENU_CONNECTED_ACTIONS, True)
-				self.__start_refresh()
+				self.__start_refresh(delay=False)
 
 		else:
 			LOG.debug("Connect dialog rejected.")
@@ -356,7 +371,23 @@ class ActivityController(object):
 		Called when the refresh action is triggered.
 		"""
 		LOG.debug("Refresh action.")
-		self.__start_refresh()
+		self.__start_refresh(delay=False)
+
+	def __on_app_about_to_quit(self) -> None:
+		"""
+		Called after the Qt application event loop stops, and is about to quit.
+		"""
+		LOG.debug("About to quit.")
+		self.__quit_future.cancel()
+
+	@asyncClose
+	async def __on_app_close(self) -> None:
+		"""
+		Called before the Qt application event loop stops.
+		"""
+		LOG.debug("Close.")
+		self.__stop_refresh()
+		await self.__disconnect_pg()
 
 	async def run(self) -> int:
 		"""
@@ -413,13 +444,19 @@ class ActivityController(object):
 		LOG.debug("Window created.")
 
 		# Wait for application to close.
-		stop_future = asyncio.Future()
+		# - NOTICE: When the Qt application is about to quit, the event will be
+		#   stopped. The only appropriate way to finish the future is to cancel it.
+		self.__quit_future = asyncio.get_running_loop().create_future()
 		qapp = QApplication.instance()
 		qapp.aboutToQuit: SignalInstance  # noqa
-		qapp.aboutToQuit.connect(lambda: stop_future.set_result(None))
-		await stop_future
+		qapp.aboutToQuit.connect(self.__on_app_about_to_quit)
 
-		return 1
+		try:
+			await self.__quit_future
+		except asyncio.CancelledError:
+			pass
+
+		return 0
 
 	def __populate_table(self, data: List[ActivityRow]) -> None:
 		"""
@@ -468,16 +505,18 @@ class ActivityController(object):
 		# Set title.
 		self.__window.setWindowTitle(title)
 
-	def __start_refresh(self) -> None:
+	def __start_refresh(self, delay: bool) -> None:
 		"""
 		Start monitoring the activity of PostgreSQL.
+
+		*delay* (:class:`bool`) is whether to delay the refresh.
 		"""
 		if self.__refresh_task is not None:
 			LOG.debug("Refresh in progress.")
 			return
 
 		LOG.debug("Start refresh.")
-		self.__refresh_task = asyncio.create_task(self.__delayed_refresh())
+		self.__refresh_task = asyncio.create_task(self.__delayed_refresh(delay))
 
 	def __stop_refresh(self) -> None:
 		"""

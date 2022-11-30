@@ -6,11 +6,12 @@ import dataclasses
 import importlib.resources
 import logging
 from typing import (
+	Optional,
 	cast)
 
+import asyncio
 from PySide6.QtCore import (
 	QObject,
-	Signal,
 	SignalInstance)
 from PySide6.QtWidgets import (
 	QDialog,
@@ -21,6 +22,8 @@ from PySide6.QtWidgets import (
 	QWidget)
 from PySide6.QtUiTools import (
 	QUiLoader)
+from qasync import (
+	asyncSlot)
 
 import app.gui
 from app.activity import (
@@ -87,13 +90,12 @@ class ConnectDialogController(object):
 
 		self.__dialog = cast(QDialog, None)
 		"""
-		*dialog* (:class:`QDialog`) is the connect dialog.
+		*__dialog* (:class:`QDialog`) is the connect dialog.
 		"""
 
-		self.signals = ConnectDialogSignals()
+		self.__result = cast(asyncio.Future[Optional[ConnectDialogData]], None)
 		"""
-		*signals* (:class:`ConnectDialogSignals`) contains the signals used by the
-		controller.
+		*__result* (:class:`asyncio.Future`) is the future result of the dialog.
 		"""
 
 	def __get_child(self, sel: ObjectSel) -> QObject:
@@ -110,26 +112,31 @@ class ConnectDialogController(object):
 		)
 		return child
 
-	def __on_dialog_accepted(self) -> None:
+	@asyncSlot()
+	async def __on_dialog_accepted(self) -> None:
 		"""
 		Called when the dialog is accepted.
 		"""
 		LOG.debug("Dialog accepted.")
 		form_data = self.__parse_form()
-		self.signals.accepted.emit(form_data)
+		self.__result.set_result(form_data)
 
-	def __on_dialog_rejected(self) -> None:
+	@asyncSlot()
+	async def __on_dialog_rejected(self) -> None:
 		"""
 		Called when the dialog is rejected.
 		"""
 		LOG.debug("Dialog rejected.")
-		self.signals.rejected.emit()
+		self.__result.set_result(None)
 
-	def open(self, parent: QWidget) -> None:
+	async def open(self, parent: QWidget) -> Optional['ConnectDialogData']:
 		"""
 		Open the connection dialog.
 
 		*parent* (:class:`QWidget`) is the parent widget.
+
+		Returns the dialog data (:class:`ConnectDialogData`) on success. Otherwise,
+		returns :data:`None`.
 		"""
 		LOG.debug("Create dialog.")
 
@@ -139,6 +146,7 @@ class ConnectDialogController(object):
 
 		assert isinstance(ui_result, QDialog), ui_result
 		self.__dialog = ui_result
+		self.__result = asyncio.get_running_loop().create_future()
 
 		# Setup connect button.
 		connect_button: QPushButton = self.__get_child(_WIDGET_CONNECT_BUTTON)
@@ -153,6 +161,8 @@ class ConnectDialogController(object):
 
 		# Display dialog.
 		self.__dialog.open()
+
+		return await self.__result
 
 	def __parse_form(self) -> 'ConnectDialogData':
 		"""
@@ -201,31 +211,6 @@ class ConnectDialogController(object):
 		assert input_sel.type is QSpinBox, input_sel
 		spin_box: QSpinBox = self.__get_child(input_sel)
 		return spin_box.value()
-
-
-class ConnectDialogSignals(QObject):
-	"""
-	The :class:`ConnectDialogSignals` class defines the signals used by the
-	:class:`ConnectDialogController` class.
-
-	- NOTICE: Only a :class:`QObject` can define signals.
-	"""
-
-	accepted = Signal(object)
-	"""
-	*accepted* (:class:`Signal`) is the signal emitted when the dialog is
-	accepted. This will be emitted with the form data (:class:`ConnectDialogData`).
-	"""
-
-	rejected = Signal()
-	"""
-	*rejected* (:class:`Signal`) is the signal emitted when the dialog is
-	rejected. This will not be emitted with any arguments.
-	"""
-
-	# Fix type hints.
-	accepted: SignalInstance
-	rejected: SignalInstance
 
 
 @dataclasses.dataclass(frozen=True)
