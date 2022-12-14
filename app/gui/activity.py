@@ -15,6 +15,7 @@ from typing import (
 
 from PySide6.QtCore import (
 	QAbstractTableModel,
+	QItemSelection,
 	QModelIndex,
 	QObject,
 	QSortFilterProxyModel,
@@ -287,7 +288,17 @@ class ActivityController(object):
 
 		Returns the PID (:class:`int` or :data:`None`).
 		"""
-		# TODO: Get PID from activity table.
+		pid: Optional[int] = None
+		for proxy_index in self.__activity_table.selectionModel().selectedRows():
+			LOG.debug(f"Proxy index: {proxy_index.row()}")
+			source_index = self.__activity_proxy_model.mapToSource(proxy_index)
+			LOG.debug(f"Source index: {source_index.row()}")
+			activity_row = self.__activity_model.get_data()[source_index.row()]
+			pid = activity_row.pid
+			break
+
+		LOG.debug(f"Selected PID: {pid}")
+		return pid
 
 	@asyncSlot()
 	async def __on_action_cancel_query(self) -> None:
@@ -373,6 +384,25 @@ class ActivityController(object):
 		LOG.debug("Refresh action.")
 		self.__start_refresh(delay=False)
 
+	@asyncSlot()
+	async def __on_activity_selection_changed(
+		self,
+		selected: QItemSelection,
+		deselected: QItemSelection,
+	) -> None:
+		"""
+		Called when the selection changes on the activity table.
+
+		*selected* (:class:`QItemSelection`) is the newly selected items.
+
+		*deselected* (:class:`QItemSelection`) is the previously selected items.
+		"""
+		LOG.debug("Activity selection changed.")
+		if self.__activity_table.selectionModel().hasSelection():
+			self.__enable_actions(_MENU_SELECTED_QUERY_ACTIONS, True)
+		else:
+			self.__disable_selected_query_actions()
+
 	def __on_app_about_to_quit(self) -> None:
 		"""
 		Called after the Qt application event loop stops, and is about to quit.
@@ -438,6 +468,10 @@ class ActivityController(object):
 		self.__activity_table.setModel(self.__activity_proxy_model)
 		self.__activity_table.sortByColumn(pid_column, Qt.AscendingOrder)
 
+		sel_model = self.__activity_table.selectionModel()
+		sel_model.selectionChanged: SignalInstance  # noqa
+		sel_model.selectionChanged.connect(self.__on_activity_selection_changed)
+
 		# Display window.
 		self.__window.show()
 
@@ -467,15 +501,7 @@ class ActivityController(object):
 		LOG.debug(f"Populate table: {len(data)} rows.")
 
 		# Get PID for the selected row.
-		pid: Optional[int] = None
-		for proxy_index in self.__activity_table.selectionModel().selectedRows():
-			LOG.debug(f"Old proxy index: {proxy_index.row()}")
-			source_index = self.__activity_proxy_model.mapToSource(proxy_index)
-			LOG.debug(f"Old source index: {source_index.row()}")
-			activity_row = self.__activity_model.get_data()[source_index.row()]
-			pid = activity_row.pid
-
-		LOG.debug(f"Selected PID: {pid}")
+		pid = self.__get_selected_pid()
 
 		# Update activity data.
 		self.__activity_model.set_data(data)
