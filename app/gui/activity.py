@@ -561,9 +561,6 @@ class ActivityTableModel(QAbstractTableModel):
 	PostgreSQL activity data.
 	"""
 
-	# Fix type hints.
-	layoutChanged: SignalInstance
-
 	def __init__(self, parent: QObject) -> None:
 		"""
 		Initializes the :class:`ActivityTableModel` instance.
@@ -675,10 +672,15 @@ class ActivityTableModel(QAbstractTableModel):
 
 		*data* (:class:`list` of :class:`ActivityRow`) is the activity data.
 		"""
-		self.__data = data
+		# Remove all old rows, and emit required signals.
+		self.beginRemoveRows(QModelIndex(), 0, len(self.__data))
+		self.__data = []
+		self.endRemoveRows()
 
-		# Emit signal that the model rows have changed.
-		self.layoutChanged.emit()
+		# Insert new rows, and emit required signals.
+		self.beginInsertRows(QModelIndex(), 0, len(data))
+		self.__data = data
+		self.endInsertRows()
 
 
 class SortProxyModel(QSortFilterProxyModel):
