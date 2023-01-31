@@ -7,7 +7,7 @@ authors = [
 	{name = "Caleb P. Burns", email = "cpburnz@gmail.com"},
 ]
 name = "pg-activity-qt"
-version = "0.1"
+version = "0.1.dev1"
 
 [tool.setuptools.packages.find]
 include = ["app", "app.*"]
