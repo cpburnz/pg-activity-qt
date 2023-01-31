@@ -6,6 +6,7 @@ requires = ["setuptools>=40.8.0"]
 authors = [
 	{name = "Caleb P. Burns", email = "cpburnz@gmail.com"},
 ]
+license = {text = "MIT License"}
 name = "pg-activity-qt"
 version = "0.1.dev1"
 
