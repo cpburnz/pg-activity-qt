@@ -46,9 +46,9 @@ from .util import (
 	ObjectSel,
 	find_child)
 
-_ACTION_CANCEL_QUERY = ObjectSel(QAction, "action_CancelQuery")
+_ACTION_CANCEL_BACKEND = ObjectSel(QAction, "action_CancelBackend")
 """
-The selector for the cancel query action.
+The selector for the cancel backend action.
 """
 
 _ACTION_CONNECT = ObjectSel(QAction, "action_Connect")
@@ -61,9 +61,9 @@ _ACTION_DISCONNECT = ObjectSel(QAction, "action_Disconnect")
 The selector for the disconnect action.
 """
 
-_ACTION_KILL_QUERY = ObjectSel(QAction, "action_KillQuery")
+_ACTION_KILL_BACKEND = ObjectSel(QAction, "action_KillBackend")
 """
-The selector for the kill query action.
+The selector for the kill backend action.
 """
 
 _ACTION_REFRESH = ObjectSel(QAction, "action_Refresh")
@@ -74,6 +74,11 @@ The selector for the refresh action.
 LOG = logging.getLogger(__name__)
 """
 The module logger.
+"""
+
+_TAB_WIDTH = 4
+"""
+The tab width (in spaces).
 """
 
 _WIDGET_ACTIVITY_TABLE = ObjectSel(QTableView, "tableView_Activity")
@@ -104,12 +109,12 @@ _MENU_CONNECTED_ACTIONS = [
 The selectors for the menu actions that require an active connection.
 """
 
-_MENU_SELECTED_QUERY_ACTIONS = [
-	_ACTION_CANCEL_QUERY,
-	_ACTION_KILL_QUERY,
+_MENU_SELECTED_BACKEND_ACTIONS = [
+	_ACTION_CANCEL_BACKEND,
+	_ACTION_KILL_BACKEND,
 ]
 """
-The selectors for the menu actions that require a specific query to be selected.
+The selectors for the menu actions that require a specific backend to be selected.
 """
 
 
@@ -205,6 +210,12 @@ class ActivityController(object):
 			LOG.debug("Refresh timer canceled.")
 			timer.cancel()
 
+	def __clear_query_text(self) -> None:
+		"""
+		Clear the query text.
+		"""
+		self.__query_text.clear()
+
 	def __clear_table(self) -> None:
 		"""
 		Clear the activity table.
@@ -217,12 +228,12 @@ class ActivityController(object):
 		"""
 		self.__enable_actions(_MENU_CONNECTED_ACTIONS, False)
 
-	def __disable_selected_query_actions(self) -> None:
+	def __disable_selected_backend_actions(self) -> None:
 		"""
-		Disable the menu actions that require a specific query to be selected from
+		Disable the menu actions that require a specific backend to be selected from
 		the activity table.
 		"""
-		self.__enable_actions(_MENU_SELECTED_QUERY_ACTIONS, False)
+		self.__enable_actions(_MENU_SELECTED_BACKEND_ACTIONS, False)
 
 	async def __disconnect_pg(self) -> None:
 		"""
@@ -272,9 +283,9 @@ class ActivityController(object):
 		"""
 		pid: Optional[int] = None
 		for proxy_index in self.__activity_table.selectionModel().selectedRows():
-			LOG.debug(f"Proxy index: {proxy_index.row()}")
+			LOG.debug(f"Get PID proxy index: {proxy_index.row()}")
 			source_index = self.__activity_proxy_model.mapToSource(proxy_index)
-			LOG.debug(f"Source index: {source_index.row()}")
+			LOG.debug(f"Get PID source index: {source_index.row()}")
 			activity_row = self.__activity_model.get_data()[source_index.row()]
 			pid = activity_row.pid
 			break
@@ -283,14 +294,14 @@ class ActivityController(object):
 		return pid
 
 	@asyncSlot()
-	async def __on_action_cancel_query(self) -> None:
+	async def __on_action_cancel_backend(self) -> None:
 		"""
-		Called when the cancel query action is triggered.
+		Called when the cancel backend action is triggered.
 		"""
-		LOG.debug("Cancel query action.")
+		LOG.debug("Cancel backend action.")
 		pid = self.__get_selected_pid()
 		if pid is not None:
-			await self.__pg_activity.cancel_query(pid)
+			await self.__pg_activity.cancel_backend(pid)
 
 	@asyncSlot()
 	async def __on_action_connect(self) -> None:
@@ -308,9 +319,10 @@ class ActivityController(object):
 
 			# Disconnect active connection.
 			self.__disable_connected_actions()
-			self.__disable_selected_query_actions()
+			self.__disable_selected_backend_actions()
 			self.__stop_refresh()
 			self.__clear_table()
+			self.__clear_query_text()
 			self.__set_title()
 			await self.__disconnect_pg()
 
@@ -342,21 +354,22 @@ class ActivityController(object):
 
 		# Disconnect active connection.
 		self.__disable_connected_actions()
-		self.__disable_selected_query_actions()
+		self.__disable_selected_backend_actions()
 		self.__stop_refresh()
 		self.__clear_table()
+		self.__clear_query_text()
 		self.__set_title()
 		await self.__disconnect_pg()
 
 	@asyncSlot()
-	async def __on_action_kill_query(self) -> None:
+	async def __on_action_kill_backend(self) -> None:
 		"""
-		Called when the kill query action is triggered.
+		Called when the kill backend action is triggered.
 		"""
-		LOG.debug("Kill query action.")
+		LOG.debug("Kill backend action.")
 		pid = self.__get_selected_pid()
 		if pid is not None:
-			await self.__pg_activity.terminate_query(pid)
+			await self.__pg_activity.terminate_backend(pid)
 
 	@asyncSlot()
 	async def __on_action_refresh(self) -> None:
@@ -379,11 +392,25 @@ class ActivityController(object):
 
 		*deselected* (:class:`QItemSelection`) is the previously selected items.
 		"""
-		LOG.debug("Activity selection changed.")
-		if self.__activity_table.selectionModel().hasSelection():
-			self.__enable_actions(_MENU_SELECTED_QUERY_ACTIONS, True)
+		# NOTICE: On refresh, this is called twice. First, to deselect a "-1" row.
+		# Second, to select the active row.
+		if selected.isEmpty():
+			return
+
+		pid = self.__get_selected_pid()
+
+		LOG.debug(f"Activity selection changed: {pid}.")
+		#LOG.debug("Activity selection changed: {pid} (S={s}, D={d}).".format(
+		#	pid=pid,
+		#	s=[r for isr in selected.toList() for r in range(isr.top(), isr.bottom() + 1)],
+		#	d=[r for isr in deselected.toList() for r in range(isr.top(), isr.bottom() + 1)],
+		#))
+
+		if pid is not None:
+			self.__enable_actions(_MENU_SELECTED_BACKEND_ACTIONS, True)
+			await self.__update_query_text(pid)
 		else:
-			self.__disable_selected_query_actions()
+			self.__disable_selected_backend_actions()
 
 	def __on_app_about_to_quit(self) -> None:
 		"""
@@ -432,10 +459,10 @@ class ActivityController(object):
 		# Bind actions.
 		action_sel: ObjectSel
 		for action_sel, callback in [
-			(_ACTION_CANCEL_QUERY, self.__on_action_cancel_query),
+			(_ACTION_CANCEL_BACKEND, self.__on_action_cancel_backend),
 			(_ACTION_CONNECT, self.__on_action_connect),
 			(_ACTION_DISCONNECT, self.__on_action_disconnect),
-			(_ACTION_KILL_QUERY, self.__on_action_kill_query),
+			(_ACTION_KILL_BACKEND, self.__on_action_kill_backend),
 			(_ACTION_REFRESH, self.__on_action_refresh),
 		]:
 			action: QAction = self.__get_child(action_sel)
@@ -444,12 +471,17 @@ class ActivityController(object):
 
 		# Initialize actions.
 		self.__disable_connected_actions()
-		self.__disable_selected_query_actions()
+		self.__disable_selected_backend_actions()
 
 		# Get widgets.
 		self.__activity_table: QTableView = self.__get_child(_WIDGET_ACTIVITY_TABLE)
-		self.__query_text = self.__get_child(_WIDGET_QUERY_TEXT)
 		self.__status_bar = self.__get_child(_WIDGET_STATUS_BAR)
+		self.__query_text: QTextEdit = self.__get_child(_WIDGET_QUERY_TEXT)
+
+		# Setup query text.
+		font_metrics = self.__query_text.fontMetrics()
+		width = font_metrics.horizontalAdvance(" " * _TAB_WIDTH)
+		self.__query_text.setTabStopDistance(width)
 
 		# Setup activity table.
 		self.__activity_model = ActivityTableModel(self.__activity_table)
@@ -606,6 +638,22 @@ class ActivityController(object):
 		LOG.debug("Stop refresh.")
 		self.__cancel_refresh_timer()
 		self.__cancel_refresh_task()
+
+	async def __update_query_text(self, pid: int) -> None:
+		"""
+		Update the query text.
+
+		*pid* (:class:`int`) is the PID of the backend process.
+		"""
+		# Get query text.
+		query = await self.__pg_activity.fetch_query(pid)
+		if query is None:
+			query = ""
+
+		# Set query text.
+		if query != self.__query_text.toPlainText():
+			LOG.debug("Set query text.")
+			self.__query_text.setPlainText(query)
 
 
 # noinspection PyMethodOverriding

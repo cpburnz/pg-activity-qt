@@ -43,7 +43,19 @@
         <bool>true</bool>
        </property>
       </widget>
-      <widget class="QTextEdit" name="textEdit_Query"/>
+      <widget class="QTextEdit" name="textEdit_Query">
+       <property name="font">
+        <font>
+         <family>Monospace</family>
+        </font>
+       </property>
+       <property name="lineWrapMode">
+        <enum>QTextEdit::NoWrap</enum>
+       </property>
+       <property name="acceptRichText">
+        <bool>false</bool>
+       </property>
+      </widget>
      </widget>
     </item>
    </layout>
@@ -65,8 +77,8 @@
     <addaction name="separator"/>
     <addaction name="action_Disconnect"/>
     <addaction name="action_Refresh"/>
-    <addaction name="action_CancelQuery"/>
-    <addaction name="action_KillQuery"/>
+    <addaction name="action_CancelBackend"/>
+    <addaction name="action_KillBackend"/>
     <addaction name="separator"/>
     <addaction name="action_Quit"/>
    </widget>
@@ -109,25 +121,25 @@
     <string>Ctrl+R</string>
    </property>
   </action>
-  <action name="action_CancelQuery">
+  <action name="action_CancelBackend">
    <property name="icon">
     <iconset theme="media-playback-stop">
      <normaloff>.</normaloff>.</iconset>
    </property>
    <property name="text">
-    <string>&amp;Cancel Query</string>
+    <string>&amp;Cancel Backend</string>
    </property>
    <property name="shortcut">
     <string>Ctrl+C</string>
    </property>
   </action>
-  <action name="action_KillQuery">
+  <action name="action_KillBackend">
    <property name="icon">
     <iconset theme="process-stop">
      <normaloff>.</normaloff>.</iconset>
    </property>
    <property name="text">
-    <string>&amp;Kill Query</string>
+    <string>&amp;Kill Backend</string>
    </property>
    <property name="shortcut">
     <string>Ctrl+K</string>

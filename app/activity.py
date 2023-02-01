@@ -78,21 +78,21 @@ class PostgresActivityManager(object):
 		PostgreSQL database.
 		"""
 
-	async def cancel_query(self, pid: int) -> bool:
+	async def cancel_backend(self, pid: int) -> bool:
 		"""
-		Cancel the query.
+		Cancel the backend process.
 
 		*pid* (:class:`int`) is the PID of the backend process.
 
 		Returns whether the process was terminated (:class:`True`), or not
 		(:class:`False`).
 		"""
-		LOG.debug(f"Cancel query {pid}.")
+		LOG.debug(f"Cancel backend {pid}.")
 		async with self.__connection.cursor() as cursor:
 			await cursor.execute("""
 				SELECT pg_cancel_backend(%(pid)s) AS success;
 			""", {'pid': pid})
-			row: _QueryCancelRow = await cursor.fetchone()
+			row: _CancelBackendRow = await cursor.fetchone()
 			return row.success
 
 	async def close(self) -> None:
@@ -240,6 +240,64 @@ class PostgresActivityManager(object):
 			""")
 			return await cursor.fetchall()
 
+	async def fetch_query(self, pid: int) -> Optional[str]:
+		"""
+		Run the fetch "query" query.
+
+		*pid* (:class:`int`) is the PID of the backend process.
+
+		Returns the query (:class:`str` or :data:`None`).
+		"""
+		LOG.debug(f"Fetch query {pid}.")
+		if self.__version >= (9, 2):
+			return await self.__fetch_query_ge_92(pid)
+		else:
+			return await self.__fetch_query_le_91(pid)
+
+	async def __fetch_query_ge_92(self, pid: int) -> Optional[str]:
+		"""
+		Run the fetch "query" query for PostgreSQL 9.2 and above.
+
+		*pid* (:class:`int`) is the PID of the backend process.
+
+		Returns the query (:class:`str` or :data:`None`).
+		"""
+		LOG.debug(f"Fetch query {pid} (v>=9.2).")
+		async with self.__connection.cursor() as cursor:
+			await cursor.execute("""
+				SELECT
+					(CASE WHEN state = 'active'
+						THEN query
+						ELSE NULL
+					END) AS query
+				FROM pg_stat_activity
+				WHERE pid = %(pid)s;
+			""", {'pid': pid})
+			row: _FetchQueryRow = await cursor.fetchone()
+			return row.query
+
+	async def __fetch_query_le_91(self, pid: int) -> Optional[str]:
+		"""
+		Run the fetch "query" query for PostgreSQL 9.1 and below.
+
+		*pid* (:class:`int`) is the PID of the backend process.
+
+		Returns the query (:class:`str` or :data:`None`).
+		"""
+		LOG.debug(f"Fetch query {pid} (v<=9.1).")
+		async with self.__connection.cursor() as cursor:
+			await cursor.execute("""
+				SELECT
+					(CASE WHEN current_query LIKE '<IDLE>%'
+						THEN NULL
+						ELSE current_query
+					END) AS query
+				FROM pg_stat_activity
+				WHERE procpid = %(pid)s;
+			""", {'pid': pid})
+			row: _FetchQueryRow = await cursor.fetchone()
+			return row.query
+
 	async def __get_version(self) -> Tuple[int, ...]:
 		"""
 		Run the get version query.
@@ -252,27 +310,27 @@ class PostgresActivityManager(object):
 			await cursor.execute("""
 				SHOW server_version;
 			""")
-			row: _QueryVersionRow = await cursor.fetchone()
+			row: _GetVersionRow = await cursor.fetchone()
 			LOG.debug(f"VERSION: {row.server_version}")
 			version_parts = row.server_version.split(" ", 1)[0].split(".", 2)[:2]
 			version = tuple(map(int, version_parts))
 			return version
 
-	async def terminate_query(self, pid: int) -> bool:
+	async def terminate_backend(self, pid: int) -> bool:
 		"""
-		Terminate the query.
+		Terminate the backend process.
 
 		*pid* (:class:`int`) is the PID of the backend process.
 
 		Returns whether the process was terminated (:class:`True`), or not
 		(:class:`False`).
 		"""
-		LOG.debug(f"Terminate query {pid}.")
+		LOG.debug(f"Terminate backend {pid}.")
 		async with self.__connection.cursor() as cursor:
 			await cursor.execute("""
 				SELECT pg_terminate_backend(%(pid)s) AS success;
 			""", {'pid': pid})
-			row: _QueryTerminateRow = await cursor.fetchone()
+			row: _TerminateBackendRow = await cursor.fetchone()
 			return row.success
 
 
@@ -292,6 +350,18 @@ class ActivityRow(NamedTuple):
 	xact_start: Optional[datetime.datetime]
 
 
+class _CancelBackendRow(NamedTuple):
+	success: bool
+
+
+class _FetchQueryRow(NamedTuple):
+	query: Optional[str]
+
+
+class _GetVersionRow(NamedTuple):
+	server_version: str
+
+
 @dataclasses.dataclass(frozen=True)
 class PostgresConnectionParams(object):
 	database: str
@@ -301,17 +371,5 @@ class PostgresConnectionParams(object):
 	user: str
 
 
-class _QueryCancelRow(NamedTuple):
+class _TerminateBackendRow(NamedTuple):
 	success: bool
-
-
-class _QueryFetchRow(NamedTuple):
-	query: str
-
-
-class _QueryTerminateRow(NamedTuple):
-	success: bool
-
-
-class _QueryVersionRow(NamedTuple):
-	server_version: str
