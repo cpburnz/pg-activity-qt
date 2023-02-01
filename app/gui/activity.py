@@ -167,8 +167,14 @@ class ActivityController(object):
 
 		self.__refresh_task: Optional[asyncio.Task] = None
 		"""
-		*__refresh_task* (:class:`asyncio.TimerHandle` or :data:`None`) is the
-		active refresh task.
+		*__refresh_task* (:class:`asyncio.Task` or :data:`None`) is the active
+		refresh task.
+		"""
+
+		self.__refresh_timer: Optional[asyncio.TimerHandle] = None
+		"""
+		*__refresh_timer* (:class:`asyncio.TimerHandle` or :data:`None`) is the
+		timer to start the next scheduled refresh.
 		"""
 
 		self.__status_bar = cast(QStatusBar, None)
@@ -181,53 +187,29 @@ class ActivityController(object):
 		*window* (:class:`QMainWindow`) is the activity window.
 		"""
 
+	def __cancel_refresh_task(self) -> None:
+		"""
+		Cancel the active refresh task.
+		"""
+		task, self.__refresh_task = self.__refresh_task, None
+		if task is not None:
+			LOG.debug("Refresh task canceled.")
+			task.cancel()
+
+	def __cancel_refresh_timer(self) -> None:
+		"""
+		Cancel the active refresh timer.
+		"""
+		timer, self.__refresh_timer = self.__refresh_timer, None
+		if timer is not None:
+			LOG.debug("Refresh timer canceled.")
+			timer.cancel()
+
 	def __clear_table(self) -> None:
 		"""
 		Clear the activity table.
 		"""
 		self.__activity_model.set_data([])
-
-	async def __delayed_refresh(self, delay: bool) -> None:
-		"""
-		Refresh the PostgreSQL activity after a delay.
-
-		*delay* (:class:`bool`) is whether to delay the refresh.
-		"""
-		if delay:
-			# Delay before refresh.
-			# - TODO: Refresh action does nothing because a delayed refresh is already
-			#   in progress.
-			LOG.debug("Refresh delay.")
-			try:
-				await asyncio.sleep(self.__refresh_interval)
-			except asyncio.CancelledError:
-				return
-
-		else:
-			LOG.debug("Refresh immediate.")
-
-		# Refresh activity.
-		LOG.debug("Refresh activity.")
-		try:
-			results = await self.__pg_activity.fetch_activity()
-
-		except Exception:
-			LOG.exception("Refresh error.")
-
-			# Clear refresh state.
-			self.__refresh_task = None
-
-		else:
-			LOG.debug(f"Refresh done: {len(results)} rows.")
-
-			# Clear refresh state.
-			self.__refresh_task = None
-
-			# Populate activity table.
-			self.__populate_table(results)
-
-			# Schedule next refresh.
-			self.__start_refresh(delay=True)
 
 	def __disable_connected_actions(self) -> None:
 		"""
@@ -419,6 +401,18 @@ class ActivityController(object):
 		self.__stop_refresh()
 		await self.__disconnect_pg()
 
+	def __on_refresh_timer_done(self) -> None:
+		"""
+		Called when the refresh timer is done.
+		"""
+		LOG.debug("Refresh timer.")
+
+		# Clear refresh timer.
+		self.__refresh_timer = None
+
+		# Start refresh task.
+		self.__start_refresh_task()
+
 	async def run(self) -> int:
 		"""
 		Open the activity window.
@@ -478,7 +472,7 @@ class ActivityController(object):
 		LOG.debug("Window created.")
 
 		# Wait for application to close.
-		# - NOTICE: When the Qt application is about to quit, the event will be
+		# - NOTICE: When the Qt application is about to quit, the event loop will be
 		#   stopped. The only appropriate way to finish the future is to cancel it.
 		self.__quit_future = asyncio.get_running_loop().create_future()
 		qapp = QApplication.instance()
@@ -518,6 +512,33 @@ class ActivityController(object):
 					self.__activity_table.selectRow(proxy_index.row())
 					break
 
+	async def __refresh_activity(self) -> None:
+		"""
+		Refresh the PostgreSQL activity.
+		"""
+		# Refresh activity.
+		LOG.debug("Refresh activity.")
+		try:
+			results = await self.__pg_activity.fetch_activity()
+
+		except Exception:
+			LOG.exception("Refresh error.")
+
+			# Clear refresh state.
+			self.__refresh_task = None
+
+		else:
+			LOG.debug(f"Refresh done: {len(results)} rows.")
+
+			# Clear refresh state.
+			self.__refresh_task = None
+
+			# Populate activity table.
+			self.__populate_table(results)
+
+			# Schedule next refresh.
+			self.__start_refresh(delay=True)
+
 	def __set_title(self, prefix: Optional[str] = None) -> None:
 		"""
 		Set the window title.
@@ -535,23 +556,56 @@ class ActivityController(object):
 		"""
 		Start monitoring the activity of PostgreSQL.
 
-		*delay* (:class:`bool`) is whether to delay the refresh.
+		*delay* (:class:`bool`) is whether to delay the next refresh.
 		"""
 		if self.__refresh_task is not None:
 			LOG.debug("Refresh in progress.")
 			return
 
-		LOG.debug("Start refresh.")
-		self.__refresh_task = asyncio.create_task(self.__delayed_refresh(delay))
+		if delay:
+			# Start refresh timer.
+			self.__start_refresh_timer()
+
+		else:
+			# Cancel any active timer.
+			self.__cancel_refresh_timer()
+
+			# Start refresh task.
+			self.__start_refresh_task()
+
+	def __start_refresh_task(self) -> None:
+		"""
+		Start the refresh task.
+		"""
+		if self.__refresh_task is not None:
+			LOG.debug("Refresh in progress.")
+			return
+
+		self.__refresh_task = asyncio.create_task(self.__refresh_activity())
+
+	def __start_refresh_timer(self) -> None:
+		"""
+		Start the refresh timer to start the next scheduled refresh.
+		"""
+		if self.__refresh_timer is not None:
+			# Refresh already scheduled, do nothing.
+			LOG.debug("Refresh is scheduled.")
+
+		else:
+			# Schedule next refresh.
+			LOG.debug("Schedule refresh.")
+			self.__refresh_timer = asyncio.get_running_loop().call_later(
+				self.__refresh_interval,
+				self.__on_refresh_timer_done,
+			)
 
 	def __stop_refresh(self) -> None:
 		"""
 		Stop monitoring the activity of PostgreSQL.
 		"""
 		LOG.debug("Stop refresh.")
-		task, self.__refresh_task = self.__refresh_task, None
-		if task is not None:
-			task.cancel()
+		self.__cancel_refresh_timer()
+		self.__cancel_refresh_task()
 
 
 # noinspection PyMethodOverriding
